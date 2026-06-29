@@ -28,8 +28,9 @@ Run with: python IttyBittyLisp2.py
 
 class Environment:
     def __init__( self, parent=None, bindings=None ):
-        self.vars   = dict(bindings or {})
-        self.parent = parent
+        self.vars    = dict(bindings or {})
+        self.parent  = parent
+        self._global = parent._global if parent else self   # direct handle to the root
 
     def lookup( self, name ):
         scope = self
@@ -47,11 +48,9 @@ class Environment:
                 scope.vars[name] = val
                 return val
             scope = scope.parent
-        # Name not found anywhere -- create it in the global (root) scope.
-        root = self
-        while root.parent:
-            root = root.parent
-        root.vars[name] = val
+        # Name not found anywhere -- create it in the global scope.  The _global
+        # handle goes straight there, with no second walk down the chain.
+        self._global.vars[name] = val
         return val
 
 
