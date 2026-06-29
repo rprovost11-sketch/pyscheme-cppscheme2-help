@@ -178,7 +178,7 @@ a scope.
 
 ## 1. `define` vs `set!`
 
-*Requires: EVALUATOR2 (the `Env` chain).*
+*Requires: EVALUATOR2 (the `Environment` chain).*
 
 The toy interpreters use a single, lenient `set!`: assigning a name that is
 not bound anywhere creates it (in the global scope).  That one form quietly
@@ -210,7 +210,7 @@ and *assignment* fundamentally need different mechanics:
 3. Make `set!` strict: walk the chain, and if the name is unbound anywhere,
    raise an error instead of creating a global.
 4. Point every binding form at the introduction path.  Note that the
-   environment *constructor* (`Env(parent, bindings=...)`) is already an
+   environment *constructor* (`Environment(parent, bindings=...)`) is already an
    "introduce these bindings" operation -- which is why `let` and the
    function-call argument binding work without `set!`.
 

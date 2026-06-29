@@ -9,22 +9,22 @@ variable, or for one name to mean something different inside a function than
 it does outside.
 
 The solution is a **stack of scopes**.  Instead of one flat dictionary,
-each scope is a small `Env` node that holds its own bindings and points to a
+each scope is a small `Environment` node that holds its own bindings and points to a
 parent.  Looking up a name walks the chain outward until it is found; inner
 bindings shadow outer ones naturally.
 
 Once you have this mechanism, three things follow almost for free.
 
-**`let`** is the simplest: it opens a fresh `Env`, evaluates each init-form in
+**`let`** is the simplest: it opens a fresh `Environment`, evaluates each init-form in
 the *current* scope, binds the results in the new scope, and evaluates its
-body there.  No concept beyond `Env` itself is required.
+body there.  No concept beyond `Environment` itself is required.
 
 **User-defined functions** are the next step.  A call binds argument values in
-a fresh `Env` and evaluates the function body there.  The function object just
+a fresh `Environment` and evaluates the function body there.  The function object just
 records `(params, body, captured-env)`.
 
 **Closures** are what you get when you choose *lexical* scoping over *dynamic*
-scoping.  The question is: which `Env` does the fresh call scope extend - the
+scoping.  The question is: which `Environment` does the fresh call scope extend - the
 *caller's*, or the one active when the function was *defined*?  Extending the
 definition-time env (lexical scoping) means free variables always refer to
 what the programmer saw when writing the function.  The `Function.env` field
@@ -35,14 +35,14 @@ A useful side-effect: because each call opens its own fresh scope, recursive
 calls do not interfere with each other.  Each level of recursion has its own
 independent copy of the local variables.
 
-## Env and Function
+## Environment and Function
 
 ```python
 # ---------------------------------------------------------------------------
 # Environment: a linked chain of scopes
 # ---------------------------------------------------------------------------
 
-class Env:
+class Environment:
     def __init__( self, parent=None, bindings=None ):
         self.vars   = dict(bindings or {})
         self.parent = parent
@@ -81,21 +81,21 @@ class Function:
         self.env    = env      # lexical environment at definition time
 ```
 
-`Env.lookup` walks the stack outward, so inner bindings shadow outer ones.
-`Env.set` does the same walk but mutates: if the name already exists anywhere
+`Environment.lookup` walks the stack outward, so inner bindings shadow outer ones.
+`Environment.set` does the same walk but mutates: if the name already exists anywhere
 in the stack it updates it there; only when the name is absent everywhere does
 it create a new binding in the global (root) scope.  That is the assignment
 semantics of `set!` -- update the nearest existing binding -- with a lenient
 twist for this small interpreter: a brand-new name is created at the global
 scope rather than raising an error.
 
-`Function.env` is the key to lexical scoping: it records *which* `Env` was
+`Function.env` is the key to lexical scoping: it records *which* `Environment` was
 active at the point `lambda` was evaluated.  When the function is called, the
 new argument scope is chained off that captured env, not the caller's.
 
 ## Updated Global Environment
 
-The global environment becomes the root `Env` instead of a plain dict.  The
+The global environment becomes the root `Environment` instead of a plain dict.  The
 `print` primitive is added so demos can produce output.
 
 ```python
@@ -103,7 +103,7 @@ The global environment becomes the root `Env` instead of a plain dict.  The
 # Primitives and global environment
 # ---------------------------------------------------------------------------
 
-global_env = Env( bindings={
+global_env = Environment( bindings={
     '+':     lambda args: args[0] + args[1],
     '-':     lambda args: args[0] - args[1],
     '*':     lambda args: args[0] * args[1],
@@ -117,68 +117,69 @@ global_env = Env( bindings={
 
 The evaluator gains three new special-form cases (`let`, `lambda`, and the
 user-defined function call path) and switches from plain dict operations to
-`Env` methods.
+`Environment` methods.
 
 ```python
 def lEval( expr, env ):
     if expr in ( '#t', '#f' ):         # boolean literals self-evaluate (not identifiers)
         return expr
-    if isinstance( expr, str ):        # symbol -- variable lookup
+    elif isinstance( expr, str ):      # symbol -- variable lookup
         return env.lookup( expr )
     elif not isinstance( expr, list ): # number, etc. -- self-evaluate
         return expr
 
     # expr is a non-empty list -- a special form or procedure call.  (A bare ()
-    # is not a valid Scheme expression; this evaluator assumes a well-formed AST.)
-    head = expr[0]
+    # is not a valid Scheme expression.)  Every special form is one more arm of
+    # this single dispatch chain; the final else handles procedure calls.
 
-    if head == 'if':
+    elif expr[0] == 'if':
         cond = lEval( expr[1], env )
         return lEval( expr[2] if cond != '#f' else expr[3], env )  # #f is the only false
 
-    elif head == 'begin':
+    elif expr[0] == 'begin':
         for sub in expr[1:-1]:
             lEval( sub, env )
         return lEval( expr[-1], env )
 
-    elif head == 'let':
+    elif expr[0] == 'let':
         vardefs = expr[1]               # list of [name, init-expr] pairs
         body    = expr[2:]
-        new_env = Env( parent=env )
+        new_env = Environment( parent=env )
         for vardef in vardefs:
             new_env.vars[vardef[0]] = lEval( vardef[1], env )
         for sub in body[:-1]:
             lEval( sub, new_env )
         return lEval( body[-1], new_env )
 
-    elif head == 'set!':
+    elif expr[0] == 'set!':
         val = lEval( expr[2], env )
         env.set( expr[1], val )
         return val
 
-    elif head == 'lambda':
+    elif expr[0] == 'lambda':
         return Function( expr[1], expr[2:], env )
 
-    elif head == 'quote':
+    elif expr[0] == 'quote':
         return expr[1]
 
-    # Function call: evaluate the head and all arguments.
-    fn, *args = [lEval( subexpr, env ) for subexpr in expr]
-    if callable( fn ):               # Python primitive
-        return fn( args )
+    # Otherwise it's a function call: evaluate the operator and all arguments.
+    else:
+        fn, *args = [lEval( subexpr, env ) for subexpr in expr]
+        if callable( fn ):               # Python primitive
+            return fn( args )
 
-    # User-defined function: bind arguments in a new scope on the captured env.
-    new_env = Env( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
-    for sub in fn.body[:-1]:
-        lEval( sub, new_env )
-    return lEval( fn.body[-1], new_env )
+        # User-defined function: bind arguments in a new scope on the captured env.
+        new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
+        for sub in fn.body[:-1]:
+            lEval( sub, new_env )
+        return lEval( fn.body[-1], new_env )
 ```
 
 What changed from Part 1:
 
 - **Symbol lookup**: `env[expr]` -> `env.lookup( expr )` (walks the scope chain)
 - **`set!`**: `env[var] = val` -> `env.set( var, val )` (walks chain to find existing binding)
-- **`let`**: opens a new inner `Env`, evaluates each init-form in the *outer*
+- **`let`**: opens a new inner `Environment`, evaluates each init-form in the *outer*
   scope, binds results in the inner scope, then evaluates the body there
 - **`lambda`**: constructs a `Function` capturing the current `env` -- this is
   what makes it a closure

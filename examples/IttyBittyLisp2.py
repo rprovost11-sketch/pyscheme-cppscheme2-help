@@ -2,7 +2,7 @@
 IttyBittyLisp2 - A recursive Lisp evaluator with closures.
 
 Extends IttyBittyLisp1.py (Part 1) with:
-  - Env   : a linked chain of scopes for lexical binding
+  - Environment   : a linked chain of scopes for lexical binding
   - Function : a closure that captures its defining environment
   - let   : local variable binding
   - lambda: first-class functions (closures)
@@ -26,7 +26,7 @@ Run with: python IttyBittyLisp2.py
 # Environment: a linked chain of scopes
 # ---------------------------------------------------------------------------
 
-class Env:
+class Environment:
     def __init__( self, parent=None, bindings=None ):
         self.vars   = dict(bindings or {})
         self.parent = parent
@@ -81,62 +81,61 @@ def lEval( expr, env ):
         return expr
 
     # expr is a non-empty list -- a special form or a procedure call.  (A bare
-    # () is not a valid Scheme expression; this evaluator assumes a well-formed
-    # AST and leaves malformed input out of contract.)
+    # () is not a valid Scheme expression.)
 
-    # Special operators are handled inline
-    head = expr[0]
-    if head == 'set!':
+    # Handle Special operators inline
+    elif expr[0] == 'set!':
         name, valExpr = expr[1:]
         val = lEval(valExpr, env)
         env.set(name, val)
         return val
 
-    elif head == 'if':
+    elif expr[0] == 'if':
         condExpr, thenBody, elseBody = expr[1:]
         conditionVal = lEval(condExpr, env)
         # Scheme truthiness: every value except #f is true.
         return lEval(elseBody if conditionVal == '#f' else thenBody, env)
 
-    elif head == 'begin':
+    elif expr[0] == 'begin':
         for subExpr in expr[1:-1]:     # non-tail forms: evaluated for effect
             lEval(subExpr, env)
         return lEval(expr[-1], env)    # tail form: its value is the result
 
-    elif head == 'lambda':
+    elif expr[0] == 'lambda':
         params, *body = expr[1:]
         return Function(params, body, env)
 
-    elif head == 'quote':
+    elif expr[0] == 'quote':
         return expr[1]
 
-    elif head == 'let':
+    elif expr[0] == 'let':
         bindingPairs, *body = expr[1:]
-        new_env = Env(parent=env)
+        new_env = Environment(parent=env)
         for name, initExpr in bindingPairs:   # init exprs eval in the outer env,
             new_env.vars[name] = lEval(initExpr, env)  # bound in the new scope
         for subExpr in body[:-1]:             # non-tail body forms
             lEval(subExpr, new_env)
         return lEval(body[-1], new_env)       # tail body form
 
-    fn, *args = [ lEval(elt, env) for elt in expr ]   # eval operator + operands
+    else:
+        fn, *args = [ lEval(elt, env) for elt in expr ]   # eval operator + operands
 
-    # ---- State = APPLY (invoke a procedure on evaluated args) ----
-    if callable(fn):                   # primitive implemented in Python
-        return fn(args)
-    # user-defined function: evaluate its body in a fresh local scope chained
-    # off the *captured* (lexical) environment, not the caller's.
-    local_env = Env(parent=fn.env, bindings=dict(zip(fn.params, args)))
-    for subExpr in fn.body[:-1]:       # non-tail body forms
-        lEval(subExpr, local_env)
-    return lEval(fn.body[-1], local_env)   # tail body form
+        # ---- State = APPLY (invoke a procedure on evaluated args) ----
+        if callable(fn):                   # primitive implemented in Python
+            return fn(args)
+        # user-defined function: evaluate its body in a fresh local scope chained
+        # off the *captured* (lexical) environment, not the caller's.
+        local_env = Environment(parent=fn.env, bindings=dict(zip(fn.params, args)))
+        for subExpr in fn.body[:-1]:       # non-tail body forms
+            lEval(subExpr, local_env)
+        return lEval(fn.body[-1], local_env)   # tail body form
 
 
 # ---------------------------------------------------------------------------
 # Primitives and global environment
 # ---------------------------------------------------------------------------
 
-global_env = Env( bindings={
+global_env = Environment( bindings={
     '+':     lambda args: args[0] + args[1],
     '-':     lambda args: args[0] - args[1],
     '*':     lambda args: args[0] * args[1],

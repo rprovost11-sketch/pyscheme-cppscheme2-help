@@ -624,7 +624,7 @@ class LetFrame:
             self.pending      = self.pending[1:]
             K.append( self )
             return form, self.outer_env      # always the outer env
-        new_env = Env( parent=self.outer_env, bindings=self.bound )
+        new_env = Environment( parent=self.outer_env, bindings=self.bound )
         return _begin_body( self.body, new_env, K )
 ```
 
@@ -677,7 +677,7 @@ def do_apply( fn, args, env, K ):
         return Val( fn( args ) ), env    # primitive: Val-wrap the result
 
     # User-defined function: open a new scope and begin the body.
-    new_env = Env( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
+    new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
     return _begin_body( fn.body, new_env, K )
 
 def _begin_body( body, env, K ):
@@ -760,7 +760,7 @@ def lEval( expr, env ):
             vardefs = C[1]
             body    = list( C[2:] )
             if not vardefs:
-                C, E = _begin_body( body, Env( parent=E ), K )
+                C, E = _begin_body( body, Environment( parent=E ), K )
                 continue
             pairs             = [(vd[0], vd[1]) for vd in vardefs]
             first_name, first = pairs[0]
@@ -788,7 +788,7 @@ def lEval( expr, env ):
 ```
 
 Frame class definitions (`IfFrame`, `BeginFrame`, `LetFrame`, `SetFrame`,
-`ArgFrame`) and the supporting `Env`, `Function`, `Val`, `is_value`,
+`ArgFrame`) and the supporting `Environment`, `Function`, `Val`, `is_value`,
 `do_apply`, and `_begin_body` are shown in full in the example file.
 
 ## Running the Example

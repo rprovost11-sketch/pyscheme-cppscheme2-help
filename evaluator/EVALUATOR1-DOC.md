@@ -26,44 +26,45 @@ def lEval( expr, env ):
     if expr in ('#t', '#f'):
         return expr
     # A string is a variable name -- look it up in the environment.
-    if isinstance(expr, str):
+    elif isinstance(expr, str):
         return env[expr]
     # Any other non-list atom (int, float, ...) evaluates to itself.
     elif not isinstance(expr, list):
         return expr
 
     # expr is a non-empty list -- a special form or procedure call.  (A bare ()
-    # is not a valid Scheme expression; this evaluator assumes a well-formed AST.)
-    head = expr[0]
+    # is not a valid Scheme expression.)  Each special form is one more arm of
+    # this single dispatch chain; the final else handles procedure calls.
 
-    # Special forms: the head names a form that controls its own evaluation.
+    # Special forms: the operator names a form that controls its own evaluation.
     # 'if' must NOT evaluate both branches -- only the one that is taken.
-    if head == 'if':
+    elif expr[0] == 'if':
         condValue = lEval( expr[1], env )
         # Scheme truthiness: every value except #f is true (so 0 and the
         # empty list are true).  Dispatch on #f, not Python truthiness.
         return lEval( expr[2] if condValue != '#f' else expr[3], env )
 
-    elif head == 'begin':
+    elif expr[0] == 'begin':
         for sub in expr[1:-1]:
             lEval( sub, env )             # non-tail forms: recurse
         return lEval( expr[-1], env )
 
     # 'set!' must NOT evaluate the variable name -- only the value expression.
-    elif head == 'set!':
+    elif expr[0] == 'set!':
         var, valExpr = expr[1:]
         val = lEval(valExpr, env)
         env[var] = val
         return val
 
     # 'quote' returns its argument unevaluated.
-    elif head == 'quote':
+    elif expr[0] == 'quote':
         return expr[1]
 
-    # Regular function call: evaluate everything -- the head and all arguments --
-    # then call the resulting function with the resulting argument values.
-    fn, *evaluatedArgs = [ lEval(subExpr, env) for subExpr in expr ]
-    return fn( evaluatedArgs )
+    # Otherwise it's a regular function call: evaluate everything -- the operator
+    # and all arguments -- then call the resulting function with the values.
+    else:
+        fn, *evaluatedArgs = [ lEval(subExpr, env) for subExpr in expr ]
+        return fn( evaluatedArgs )
 ```
 
 A note on `set!`: real Scheme separates `define` (introduce a new binding) from

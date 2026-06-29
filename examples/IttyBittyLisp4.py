@@ -51,7 +51,7 @@ def is_value( c ):
 # Environment and Function (same design as IttyBittyLisp3)
 # ---------------------------------------------------------------------------
 
-class Env:
+class Environment:
     def __init__( self, parent=None, bindings=None ):
         self.vars   = dict( bindings or {} )
         self.parent = parent
@@ -147,7 +147,7 @@ class LetFrame:
             self.pending      = self.pending[1:]
             K.append( self )
             return form, self.outer_env     # next init expr - in outer env
-        new_env = Env( parent=self.outer_env, bindings=self.bound )
+        new_env = Environment( parent=self.outer_env, bindings=self.bound )
         return _begin_body( self.body, new_env, K )
 
 
@@ -214,7 +214,7 @@ def do_apply( fn, args, env, K ):
         return Val( fn( args ) ), env         # primitive: Val-wrap the result
 
     # User-defined function: open a new scope and begin the body.
-    new_env = Env( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
+    new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
     return _begin_body( fn.body, new_env, K )
 
 
@@ -292,7 +292,7 @@ def lEval( expr, env ):
             bindingPairs = C[1]
             body         = list( C[2:] )
             if not bindingPairs:
-                new_env = Env( parent=E )
+                new_env = Environment( parent=E )
                 C, E    = _begin_body( body, new_env, K )
                 continue
             pairs             = [(name, initExpr) for name, initExpr in bindingPairs]
@@ -311,7 +311,7 @@ def lEval( expr, env ):
 # Primitives and global environment
 # ---------------------------------------------------------------------------
 
-global_env = Env( bindings={
+global_env = Environment( bindings={
     '+':     lambda args: args[0] + args[1],
     '-':     lambda args: args[0] - args[1],
     '*':     lambda args: args[0] * args[1],

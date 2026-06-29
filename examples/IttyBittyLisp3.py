@@ -91,39 +91,37 @@ def lEval( expr, env ):
             return C
 
         # C is a non-empty list -- a special form or a procedure call.  (A bare
-        # () is not a valid Scheme expression; this evaluator assumes a
-        # well-formed AST and leaves malformed input out of contract.)
+        # () is not a valid Scheme expression.)
 
-        # Special operators are handled inline.  Tail positions reassign C/E and
+        # Handle Special operators inline.  Tail positions reassign C/E and
         # `continue`; non-tail positions recurse (riding the Python stack as K).
-        head = C[0]
-        if head == 'set!':
+        elif C[0] == 'set!':
             name, valExpr = C[1:]
             val = lEval(valExpr, E)             # rvalue: not tail, recurse
             E.set(name, val)
             return val
 
-        elif head == 'if':
+        elif C[0] == 'if':
             condExpr, thenBody, elseBody = C[1:]
             conditionVal = lEval(condExpr, E)   # condition: not tail, recurse
             # Scheme truthiness: every value except #f is true.
             C = elseBody if conditionVal == '#f' else thenBody
             continue                            # tail branch: loop
 
-        elif head == 'begin':
+        elif C[0] == 'begin':
             for subExpr in C[1:-1]:             # non-tail forms: recurse
                 lEval(subExpr, E)
             C = C[-1]
             continue                            # tail: last form
 
-        elif head == 'lambda':
+        elif C[0] == 'lambda':
             params, *body = C[1:]
             return Function(params, body, E)
 
-        elif head == 'quote':
+        elif C[0] == 'quote':
             return C[1]
 
-        elif head == 'let':
+        elif C[0] == 'let':
             bindingPairs, *body = C[1:]
             
             # Eval every init expr in the OUTER env E (parallel `let`, not `let*`),
@@ -137,19 +135,20 @@ def lEval( expr, env ):
             C = body[-1]
             continue                            # tail: last body form
 
-        fn, *args = [ lEval(elt, E) for elt in C ]   # eval operator + operands
-
-        # ---- State = APPLY (invoke a procedure on evaluated args) ----
-        if callable(fn):                        # primitive implemented in Python
-            return fn(args)
-        # user-defined function: TCO -- reassign the registers and loop.  The new
-        # scope is opened on the *captured* (lexical) env, not the caller's.
-        local_env = Environment(parent=fn.env, bindings=dict(zip(fn.params, args)))
-        E = local_env
-        for subExpr in fn.body[:-1]:            # non-tail body forms: recurse
-            lEval(subExpr, E)
-        C = fn.body[-1]
-        continue                                # tail call: loop, no stack growth
+        else:
+            fn, *args = [ lEval(elt, E) for elt in C ]   # eval operator + operands
+    
+            # ---- State = APPLY (invoke a procedure on evaluated args) ----
+            if callable(fn):                        # primitive implemented in Python
+                return fn(args)
+            # user-defined function: TCO -- reassign the registers and loop.  The new
+            # scope is opened on the *captured* (lexical) env, not the caller's.
+            local_env = Environment(parent=fn.env, bindings=dict(zip(fn.params, args)))
+            E = local_env
+            for subExpr in fn.body[:-1]:            # non-tail body forms: recurse
+                lEval(subExpr, E)
+            C = fn.body[-1]
+            continue                                # tail call: loop, no stack growth
 
 
 # ---------------------------------------------------------------------------
