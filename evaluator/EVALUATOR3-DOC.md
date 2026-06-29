@@ -39,6 +39,16 @@ The recursive call to the tail branch of `if` is the culprit - each call
 waits for the next one to return, so the stack grows one frame per
 iteration.
 
+This is more than a Python limitation -- it is Scheme's defining promise.
+Scheme has no loop you must reach for; iteration *is* tail recursion, and the
+standard *requires* a tail call to run in constant space (proper tail calls).
+So `countdown` doesn't merely *act* like a loop -- in Scheme it *is* one.  Parts
+1 and 2 are Schemes that break that promise; Part 3 is where you keep it.
+Rewriting the tail call as `C = ...; continue` is the mechanism that makes
+"recursion is iteration" true.  (Only the *tail* call becomes the loop -- the
+non-tail calls still recurse, as "Two Kinds of Sub-expression" makes precise
+below.)
+
 ## The Fix: Loop Instead of Recurse at Tail Positions
 
 The looping evaluator wraps everything in `while True:`.  Instead of
