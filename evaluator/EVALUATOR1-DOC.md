@@ -67,6 +67,13 @@ def lEval( expr, env ):
         return fn( evaluatedArgs )
 ```
 
+Notice the shape: it is a single `if`/`elif`/.../`else` chain, so **exactly one
+branch runs per call**.  You can read the whole evaluator as a flat list of
+mutually exclusive cases -- a boolean literal, a variable, a non-list atom, one
+of the special forms, or (in the final `else`) a procedure call.  Nothing "falls
+through": each expression matches exactly one arm, and that arm produces its
+value.  That is what makes the dispatch easy to hold in your head.
+
 A note on `set!`: real Scheme separates `define` (introduce a new binding) from
 `set!` (assign an existing one).  This tiny Lisp has just one binding form -- a
 lenient `set!` that assigns the name, creating it if it does not yet exist.
