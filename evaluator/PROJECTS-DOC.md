@@ -10,10 +10,11 @@ worked through at least EVALUATOR1, EVALUATOR2, EVALUATOR3, and
 PARSER-DOC.
 
 Unless a project says otherwise, build on the **IttyBittyLisp3** looping
-evaluator -- it is the most approachable base to extend.  **IttyBittyLisp4**
-(the CEK machine) is specialized: modifying it takes a working understanding
-of the CEK model, so reach for it only where a project explicitly needs
-first-class continuations -- the `call/cc` and `dynamic-wind` projects.  (The
+evaluator -- it is the most approachable base to extend.  The CEK machine
+(**IttyBittyLisp4**, minimal; **IttyBittyLisp5**, full language) is specialized:
+modifying it takes a working understanding of the CEK model, so reach for it --
+specifically the full-language **IttyBittyLisp5** -- only where a project needs
+first-class continuations (the `call/cc` and `dynamic-wind` projects).  (The
 CEK machine's reified `K` stack is the whole reason it exists.)
 
 The **Starter Ladder** below is the gentle exception to "bigger projects": four
@@ -438,7 +439,7 @@ replaces the current frame instead of pushing a new one.
 
 ## 7. Continuations and `call/cc`
 
-*Requires: EVALUATOR4-DOC (the CEK machine).*
+*Requires: EVALUATOR5-DOC (the full CEK machine).*
 
 A **continuation** is the rest of the computation from some point forward.
 In a CEK machine the continuation is already reified as the `K` stack --

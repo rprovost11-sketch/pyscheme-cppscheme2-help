@@ -11,7 +11,9 @@ This file is the starting point for a series that progressively adds features:
   IttyBittyLisp1.py   -- bare evaluator, flat dict environment  (this file)
   IttyBittyLisp2.py   -- adds closures, let, lexical scoping
   IttyBittyLisp3.py   -- adds tail-call optimization (TCO) via looping
-  IttyBittyLisp4.py   -- replaces recursion with an explicit CEK machine
+  IttyBittyLisp4.py   -- the CEK machine (explicit K), on pure lambda calculus
+  IttyBittyLisp5.py   -- the CEK machine with the full language restored
+  IttyBittyLisp6.py   -- compiles the machine to a flat bytecode VM
   IttyBittyParser.py  -- adds a source-string parser to complete the pipeline
 
 Throughout the series, evaluation is driven by three quantities:
@@ -25,7 +27,8 @@ parameters `expr` and `env`, and K is the Python call stack itself -- each
 recursive lEval call is one frame of "what to do next".  Later parts make
 each one explicit: IttyBittyLisp3 turns tail calls into a loop, and
 IttyBittyLisp4 (the CEK machine) promotes C, E, and K into real machine
-registers that the loop updates in place.
+registers that the loop updates in place -- and IttyBittyLisp5 scales that same
+machine up to the full language.
 
 Stack discipline: every call -- tail and non-tail alike -- recurses, so the
 Python call stack holds the entire evaluation; it overflows even for simple

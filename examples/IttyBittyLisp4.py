@@ -2,53 +2,62 @@
 IttyBittyLisp4 - A CEK machine Lisp evaluator.
 
 The CEK machine is named for its three-part state:
-  C - Control:      the current expression to evaluate, OR a Val(value) to deliver
+  C - Control:      the expression currently being evaluated
   E - Environment:  the current lexical scope
   K - Kontinuation: an explicit stack of continuation frames
 
 Unlike the looping evaluator (IttyBittyLisp3), the CEK machine never calls
 lEval recursively -- not even for non-tail sub-expressions.  Instead it pushes
-a continuation frame onto K that resumes when the sub-expression's value arrives.
-Non-tail depth is absorbed by K (a heap list), not the Python call stack.
+a continuation frame onto K that resumes when the sub-expression's value
+arrives.  Non-tail depth is absorbed by K (a heap list), not the Python call
+stack, so the Python stack stays flat no matter how deeply a program nests.
 
-Stack discipline: nothing recurses -- all depth, tail and non-tail alike,
-lives in the explicit K stack on the heap.  The Python call stack stays flat
-no matter how deeply the Lisp program nests, so nothing here can overflow it.
+The machine runs as two states, written as two inner loops:
+
+  EVAL  (top loop)    -- descend into C, pushing a frame for each sub-expression
+                         that must be evaluated first, until a leaf produces a
+                         value into the V register.
+  APPLY (bottom loop) -- pop the top frame of K and feed it V, which either
+                         finishes the program (K empty) or sets up the next C/E.
+
+Because the value flows back in its own register V, C is *always* code -- there
+is no need for the value/code discriminator the textbook one-register CEK uses.
+
+A continuation frame is just a tagged tuple -- (FRAME_IF, ...), (FRAME_ARG, ...),
+(FRAME_CALL, ...) -- dispatched on its tag in the APPLY loop.  There are no frame
+classes and no `step` methods: a frame is plain data and all the behavior lives
+here in the machine, the way the real interpreters (pyScheme / cppScheme2) do it.
+
+This toy is a pure lambda calculus + if (a number is true unless it is 0) -- the
+smallest setting that still has closures and control flow, so the machine itself
+stands out with nothing else competing for attention.  The fuller language of
+toys 1-3 (let, set!, begin, primitives, ...) would only add more frame kinds, not
+change the machine's shape -- which is exactly what IttyBittyLisp5 does, putting
+the full language back on this same machine.
+
+Stack discipline: nothing recurses -- all depth, tail and non-tail alike, lives
+in the explicit K stack on the heap.  A function call pushes no frame of its own
+(FRAME_CALL just installs the body), so a tail call reuses the current K depth --
+that is where the machine's tail-call optimization comes from.
 
 Run with: python IttyBittyLisp4.py
 """
 
 # ---------------------------------------------------------------------------
-# Val: the value / code discriminator
+# Tags
 # ---------------------------------------------------------------------------
+# A number value is just a Python int; only a closure needs a tag, to carry
+# its (param, body, captured-environment).
+VAL_CLOSURE = 1
 
-class Val:
-    """
-    Wraps a computed value so the machine loop doesn't re-evaluate it as code.
-
-    Without this, a result that happens to be a list -- e.g. [1, 2, 3] -- would
-    be indistinguishable from a function call [fn, arg, arg] and get evaluated
-    again.  Val is the machine's way of saying "this is data, not code".
-    """
-    def __init__( self, v ):
-        self.v = v
-
-
-def is_value( c ):
-    """True when c is a completed value ready to be delivered to the K stack."""
-    if isinstance( c, Val ):
-        return True
-    if c in ( '#t', '#f' ):                     # boolean literals are self-evaluating data
-        return True
-    if isinstance( c, str ):                    # symbol - still needs lookup
-        return False
-    if isinstance( c, list ):                    # any unwrapped list is code, never a value
-        return False
-    return True                                  # number, etc.
+# Continuation frame kinds.
+FRAME_IF   = 0   # waiting on a test value
+FRAME_ARG  = 1   # waiting on a function value
+FRAME_CALL = 2   # waiting on an argument value
 
 
 # ---------------------------------------------------------------------------
-# Environment and Function (same design as IttyBittyLisp3)
+# Environment: a linked chain of scopes (same class as IttyBittyLisp2/3)
 # ---------------------------------------------------------------------------
 
 class Environment:
@@ -79,245 +88,67 @@ class Environment:
         return value
 
 
-class Function:
-    def __init__( self, params, body, env ):
-        self.params = params   # list of parameter name strings
-        self.body   = body     # list of body expressions; last is the tail
-        self.env    = env      # lexical environment at definition time
-
-
 # ---------------------------------------------------------------------------
-# Continuation frame classes
-#
-# A frame is a suspended computation.  It was pushed onto K when the machine
-# needed a sub-expression's value before it could continue.  When that value
-# arrives, frame.step(value, K) is called.  It returns (C, E) -- the next
-# control expression and environment for the machine loop.
-#
-# Frames that return an expression  -> return (ast_node, env)
-# Frames that return a value        -> return (Val(v), env)
+# The CEK machine
 # ---------------------------------------------------------------------------
 
-class IfFrame:
-    """Waiting for the IF condition.  Picks the correct branch."""
-    def __init__( self, then_expr, else_expr, env ):
-        self.then_expr = then_expr
-        self.else_expr = else_expr
-        self.env       = env
-
-    def step( self, value, K ):
-        # Scheme truthiness: every value except #f is true.
-        branch = self.then_expr if value != '#f' else self.else_expr
-        return branch, self.env          # expression - not Val-wrapped (tail position)
-
-
-class BeginFrame:
-    """Sequencing: discard the incoming value, then evaluate the next form."""
-    def __init__( self, remaining, env ):
-        self.remaining = remaining       # list of forms; the last IS the tail
-        self.env       = env
-
-    def step( self, value, K ):
-        if len( self.remaining ) == 1:
-            return self.remaining[0], self.env   # tail form - TCO
-        nxt            = self.remaining[0]
-        self.remaining = self.remaining[1:]
-        K.append( self )
-        return nxt, self.env
-
-
-class LetFrame:
-    """
-    Collect LET init values one at a time (all evaluated in the outer env).
-    Once all are collected, open the new scope and begin the body.
-    """
-    def __init__( self, current_name, pending, bound, body, outer_env ):
-        self.current_name = current_name
-        self.pending      = pending      # list of (name, init-expr) pairs still to eval
-        self.bound        = bound        # dict of already-evaluated bindings
-        self.body         = body
-        self.outer_env    = outer_env
-
-    def step( self, value, K ):
-        self.bound[self.current_name] = value
-        if self.pending:
-            name, form        = self.pending[0]
-            self.current_name = name
-            self.pending      = self.pending[1:]
-            K.append( self )
-            return form, self.outer_env     # next init expr - in outer env
-        new_env = Environment( parent=self.outer_env, bindings=self.bound )
-        return _begin_body( self.body, new_env, K )
-
-
-class SetFrame:
-    """Receive the rvalue, assign it, return it."""
-    def __init__( self, name, env ):
-        self.name = name
-        self.env  = env
-
-    def step( self, value, K ):
-        self.env.set( self.name, value )
-        return Val( value ), self.env    # value - Val-wrapped so it isn't re-evaluated
-
-
-class ArgFrame:
-    """
-    Collect the function value then each argument value for a call.
-
-    Phase 1 (self.fn is None): waiting for the function value.
-    Phase 2 (self.fn is set):  waiting for each argument value in sequence.
-    When all values are in hand, dispatch through do_apply().
-    """
-    def __init__( self, fn, pending, done, env ):
-        self.fn      = fn
-        self.pending = pending   # unevaluated argument expressions still to reduce
-        self.done    = done      # evaluated argument values collected so far
-        self.env     = env
-
-    def step( self, value, K ):
-        if self.fn is None:
-            # Phase 1: this value IS the function.
-            self.fn = value
-            if not self.pending:
-                return do_apply( self.fn, self.done, self.env, K )
-            nxt          = self.pending[0]
-            self.pending = self.pending[1:]
-            K.append( self )
-            return nxt, self.env      # next argument expression
-
-        # Phase 2: this value is an evaluated argument.
-        self.done.append( value )
-        if self.pending:
-            nxt          = self.pending[0]
-            self.pending = self.pending[1:]
-            K.append( self )
-            return nxt, self.env      # next argument expression
-
-        return do_apply( self.fn, self.done, self.env, K )
-
-
-# ---------------------------------------------------------------------------
-# Apply helper
-# ---------------------------------------------------------------------------
-
-def do_apply( fn, args, env, K ):
-    """
-    Invoke fn with args.  Returns (C, E) for the machine loop.
-
-    Primitives produce a Val-wrapped result - a value to deliver.
-    User-defined Functions return the first body form as an expression
-    to reduce - no Python stack frame, pure TCO.
-    """
-    if callable( fn ):
-        return Val( fn( args ) ), env         # primitive: Val-wrap the result
-
-    # User-defined function: open a new scope and begin the body.
-    new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
-    return _begin_body( fn.body, new_env, K )
-
-
-def _begin_body( body, env, K ):
-    """Set up evaluation of a body (list of expressions) in env."""
-    if not body:
-        return Val( [] ), env
-    if len( body ) > 1:
-        K.append( BeginFrame( list( body[1:] ), env ) )
-    return body[0], env                       # first form - NOT Val-wrapped (it's code)
-
-
-# ---------------------------------------------------------------------------
-# The CEK machine loop
-# ---------------------------------------------------------------------------
-
-def lEval( expr, env ):
-    C = expr
-    E = env
-    K = []   # continuation stack
+def lEval( expr, env=None ):
+    C = expr                                       # Control:      expression being evaluated
+    V = None                                       # Value:        result flowing back in APPLY
+    E = Environment() if env is None else env      # Environment:  lexical scope
+    K = []                                         # Kontinuation: a stack of frames
 
     while True:
 
-        # Case 1: C is a value - deliver it to the top continuation frame.
-        if is_value( C ):
-            v = C.v if isinstance( C, Val ) else C
+        # ----- state EVAL: descend into C, pushing frames, until a leaf -> V -----
+        while True:
+            if isinstance( C, int ):          # a number literal -> itself
+                V = C
+                break
+            elif isinstance( C, str ):        # a variable -> look it up
+                V = E.lookup( C )
+                break
+            elif C[0] == 'lambda':            # ['lambda', param, body] -> a closure
+                V = ( VAL_CLOSURE, C[1], C[2], E )
+                break
+            elif C[0] == 'if':                # ['if', test, then, else]
+                K.append( (FRAME_IF, C[2], C[3], E) )
+                C = C[1]                      # evaluate the test first (keep descending)
+            else:                             # [fn, arg] -- an application
+                K.append( (FRAME_ARG, C[1], E) )
+                C = C[0]                      # evaluate fn first (keep descending)
+
+        # ----- state APPLY: feed V to the top frame -----
+        while True:
             if not K:
-                return v                      # K empty: computation is finished
+                return V
+
             frame = K.pop()
-            C, E  = frame.step( v, K )
-            continue
+            ftag  = frame[0]
 
-        # Case 2: C is a symbol - look it up and Val-wrap the result.
-        if isinstance( C, str ):
-            C = Val( E.lookup( C ) )
-            continue
+            if ftag == FRAME_IF:              # (FRAME_IF, then, else, env)
+                # V is the test value; 0 is false, everything else (incl. a closure) true.
+                C = frame[2] if V == 0 else frame[1]
+                E = frame[3]
+                break
 
-        # Case 3: C is a non-empty list - an expression to reduce.  (A bare () is
-        # invalid Scheme and out of contract; an empty-list *value* arrives here
-        # already Val-wrapped, so Case 1 delivers it.)
-        head = C[0]
+            elif ftag == FRAME_ARG:           # (FRAME_ARG, arg, env)
+                # V is the function value; remember it, evaluate the argument next.
+                K.append( (FRAME_CALL, V) )
+                C = frame[1]                  # arg
+                E = frame[2]                  # env
+                break
 
-        if head == 'set!':
-            K.append( SetFrame( C[1], E ) )
-            C = C[2]                          # reduce the rvalue next
-            continue
+            elif ftag == FRAME_CALL:          # (FRAME_CALL, closure)
+                # V is the argument value; frame[1] is the closure.  Bind the
+                # parameter in the closure's captured env and evaluate the body.
+                # No frame is pushed here -- a tail call reuses this K depth (TCO).
+                _, param, body, clo_env = frame[1]
+                E = Environment( parent=clo_env, bindings={ param: V } )
+                C = body
+                break
 
-        if head == 'if':
-            then_ = C[2] if len( C ) > 2 else []
-            else_ = C[3] if len( C ) > 3 else []
-            K.append( IfFrame( then_, else_, E ) )
-            C = C[1]                          # reduce the condition next
-            continue
-
-        if head == 'begin':
-            if len( C ) <= 1:
-                C = Val( [] )
-                continue
-            if len( C ) == 2:
-                C = C[1]                      # single body form - tail position
-                continue
-            K.append( BeginFrame( list( C[2:] ), E ) )
-            C = C[1]
-            continue
-
-        if head == 'lambda':
-            C = Val( Function( C[1], list( C[2:] ), E ) )
-            continue
-
-        if head == 'quote':
-            C = Val( C[1] )
-            continue
-
-        if head == 'let':
-            bindingPairs = C[1]
-            body         = list( C[2:] )
-            if not bindingPairs:
-                new_env = Environment( parent=E )
-                C, E    = _begin_body( body, new_env, K )
-                continue
-            pairs             = [(name, initExpr) for name, initExpr in bindingPairs]
-            first_name, first = pairs[0]
-            K.append( LetFrame( first_name, pairs[1:], {}, body, E ) )
-            C = first                         # reduce the first init expr next
-            continue
-
-        # Function call: push ArgFrame and reduce the function position first.
-        K.append( ArgFrame( None, list( C[1:] ), [], E ) )
-        C = C[0]
-        continue
-
-
-# ---------------------------------------------------------------------------
-# Primitives and global environment
-# ---------------------------------------------------------------------------
-
-global_env = Environment( bindings={
-    '+':     lambda args: args[0] + args[1],
-    '-':     lambda args: args[0] - args[1],
-    '*':     lambda args: args[0] * args[1],
-    '=':     lambda args: '#t' if args[0] == args[1] else '#f',
-    '<':     lambda args: '#t' if args[0] <  args[1] else '#f',
-    'print': lambda args: (print( args[0] ), args[0])[1],
-} )
+        # fall through to the outer loop -- re-enter EVAL with the new C/E
 
 
 # ---------------------------------------------------------------------------
@@ -325,52 +156,39 @@ global_env = Environment( bindings={
 # ---------------------------------------------------------------------------
 
 def lisp_str( val ):
-    # Render a value (or AST node) in Lisp surface syntax, so the demo speaks
-    # the language being interpreted instead of printing Python's repr.
-    if isinstance( val, list ):
-        return '(' + ' '.join( lisp_str( x ) for x in val ) + ')'
-    if isinstance( val, Function ):
-        return '#<procedure (' + ' '.join( val.params ) + ')>'
-    if callable( val ):
-        return '#<primitive>'
-    return str( val )
+    # Render an expression or a value in Lisp surface syntax.
+    if isinstance( val, list ):              # an expression (code)
+        return '(' + ' '.join( lisp_str(x) for x in val ) + ')'
+    if isinstance( val, tuple ):             # a closure value: (VAL_CLOSURE, param, body, env)
+        return '#<procedure (' + val[1] + ')>'
+    return str( val )                        # a number or a symbol
 
 
 def run( expr ):
-    result = lEval( expr, global_env )
-    print( f'>>> {lisp_str( expr )}' )    # the expression, in Lisp syntax
-    print( f'==> {lisp_str( result )}' )  # its value, in Lisp syntax
+    result = lEval( expr )
+    print( f'>>> {lisp_str( expr )}' )
+    print( f'==> {lisp_str( result )}' )
     print()
 
 
 def main():
-    # Basic arithmetic
-    run( ['+', ['-', 10, 7], 2] )
+    # A literal evaluates to itself.
+    run( 42 )
 
-    # set! and variable lookup
-    run( ['set!', 'x', ['*', 6, 7]] )
-    run( 'x' )
+    # ((lambda (x) x) 7) -- identity applied to 7.
+    run( [['lambda', 'x', 'x'], 7] )
 
-    # lambda creates a closure
-    run( ['set!', 'square', ['lambda', ['n'], ['*', 'n', 'n']]] )
-    run( ['square', 5] )
+    # (((lambda (x) (lambda (y) x)) 3) 9) -- a curried constant function.
+    run( [[['lambda', 'x', ['lambda', 'y', 'x']], 3], 9] )
 
-    # let creates a local scope
-    run( ['let', [['a', 3], ['b', 4]],
-          ['+', ['*', 'a', 'a'], ['*', 'b', 'b']]] )
+    # (if 1 100 200) -- a nonzero test takes the then branch.
+    run( ['if', 1, 100, 200] )
 
-    # Tail-recursive countdown.
-    # As in IttyBittyLisp3, tail calls do not grow the Python stack.
-    # Unlike IttyBittyLisp3, even the condition (= n 0) and argument (- n 1)
-    # evaluations push frames onto K instead of recursing into lEval --
-    # the Python call depth is bounded by a small constant at all times.
-    run( ['set!', 'countdown',
-          ['lambda', ['n'],
-           ['if', ['=', 'n', 0],
-            0,
-            ['countdown', ['-', 'n', 1]]]]] )
+    # (if 0 100 200) -- a zero test takes the else branch.
+    run( ['if', 0, 100, 200] )
 
-    run( ['countdown', 100000] )
+    # ((lambda (f) (f 3)) (lambda (x) x)) -- pass a function as an argument.
+    run( [['lambda', 'f', ['f', 3]], ['lambda', 'x', 'x']] )
 
 
 if __name__ == '__main__':

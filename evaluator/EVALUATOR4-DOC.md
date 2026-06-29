@@ -1,837 +1,289 @@
 # Evaluator 4 - The CEK Machine
 
-*Continues from `EVALUATOR3-DOC`: the looping evaluator.*
+*Continues from `EVALUATOR3-DOC`: the looping evaluator.  Continues in
+`EVALUATOR5-DOC`: the same machine with the full language.*
 
-This interpreter uses a **CEK machine** as its evaluator.
-(See `EVALUATOR1-DOC` for the simplest recursive baseline, and
-`EVALUATOR3-DOC` for the looping evaluator it builds on.)
+This is the hardest step in the series, and the only one that changes the
+*shape* of evaluation rather than adding a feature.  It is also the turning
+point: once you are through it, the rest of the series is downhill, because #5
+and #6 only build on the one idea introduced here.
 
-> **Heads up:** the CEK machine is the most advanced evaluator in the series.
-> If you just want to *extend* the interpreter -- new special forms, a macro
-> expander, a tracing mode -- do it on `EVALUATOR3-DOC` instead; it is far
-> easier to modify.  Come here when you need **first-class continuations**
-> (`call/cc`, `dynamic-wind`): the explicit `K` stack is what makes them
-> possible, and the looping evaluator cannot easily support them.
+> **Should you be here?**  If you only want to *extend* the interpreter -- new
+> special forms, macros, more primitives -- stop at `EVALUATOR3-DOC`.  The
+> looping evaluator covers about everything you can build in a language *except*
+> one thing: code that captures and manipulates its own control flow
+> (`call/cc`, generators, coroutines).  Those need the continuation to be a
+> value you can grab -- and making the continuation an explicit value is exactly
+> what this chapter does.  Come here when you want that power; otherwise #3 is
+> the friendlier place to work.
 
-## What Is a CEK Machine?
+## The one idea: make the continuation explicit
 
-A CEK machine is a formal model of computation introduced by Matthias
-Felleisen and Dan Friedman in 1987 as a rigorous operational semantics for
-call-by-value languages.  The name stands for its three-component state:
+Look back at every evaluator so far.  When `IttyBittyLisp1` evaluates the
+condition of an `if`, it calls `lEval` and *waits* for the answer:
 
-- **C - Control**: the current expression to evaluate, *or* a computed value
-  ready to be delivered to the next waiting computation
-- **E - Environment**: the current lexical scope - a mapping from variable names
-  to values
-- **K - Kontinuation**: an explicit stack of suspended computation frames, each
-  representing "what to do with the next value that arrives"
+```python
+conditionVal = lEval(condExpr, env)   # what happens AFTER this is on the Python stack
+return lEval(thenBranch if ... else elseBranch, env)
+```
 
-The machine runs as a pure loop.  Each iteration is one reduction step.
-The evaluator itself never calls itself recursively - not even for
-sub-expressions in non-tail positions.  Instead of recursing, it pushes a
-**continuation frame** onto K that will resume the suspended computation
-when a value arrives, then loops.
+The "what to do once the condition's value arrives" -- pick a branch and
+evaluate it -- is not written down anywhere.  It lives *implicitly* in the
+Python call stack: the half-finished `lEval` frame is sitting there, waiting to
+resume.  Even the looping evaluator (#3) still does this for non-tail positions.
 
-This is the fundamental contrast between the three evaluator generations:
+That implicit "what to do next" has a name: the **continuation**.  The CEK
+machine's whole move is to stop leaning on Python's stack for it and instead
+write the continuation down as **data** -- a stack of small records called
+*continuation frames*, each one saying "when the next value arrives, here is
+what to do with it."  With the continuation reified as data, the evaluator
+never recurses; it just loops, pushing and popping frames.
 
-| Situation | Recursive (EVALUATOR1-DOC) | Looping (EVALUATOR3-DOC) | CEK (this doc) |
+## The machine state: C, E, K (and V)
+
+A CEK machine is named for its three-register state (Felleisen & Friedman,
+1987):
+
+- **C - Control**: the expression currently being evaluated.
+- **E - Environment**: the current lexical scope.
+- **K - Kontinuation**: an explicit stack of continuation frames -- "what to do
+  with the next value."
+
+This toy adds a fourth register for clarity:
+
+- **V - Value**: the value flowing *back* once a sub-expression finishes.
+
+Keeping the value in its own register `V` means `C` is *always* code, never a
+finished value -- so the machine never has to ask "is this thing code or a
+result?"  (Textbook CEK machines reuse `C` for both and need a discriminator;
+splitting out `V` avoids it.)
+
+## Two states: EVAL and APPLY
+
+The machine has exactly two states, and we write each as its own inner loop:
+
+| State | Job |
+|---|---|
+| **EVAL**  | Walk *down* into `C`.  A leaf (number, variable, lambda) produces a value into `V`.  A compound (`if`, an application) needs a sub-expression evaluated first, so it **pushes a frame** and keeps descending. |
+| **APPLY** | A value `V` has arrived.  Pop the top frame of `K` and feed `V` to it.  That either finishes the program (`K` empty) or sets up the next `C`/`E` to evaluate. |
+
+Compare the three generations on the one question that matters -- what happens
+in a non-tail position:
+
+| Situation | Recursive (#1) | Looping (#3) | CEK (#4) |
 |---|---|---|---|
-| Tail position | recurse | `expr = sub; continue` | set C and loop |
-| Non-tail position | recurse | recurse | push frame; set C and loop |
+| Tail position | recurse | `C = sub; continue` | set `C`, loop |
+| Non-tail position | recurse | **recurse** | **push a frame**, set `C`, loop |
 
-The CEK machine eliminates the Python call-stack growth that non-tail
-positions caused in both earlier designs.  Sub-expression depth is absorbed
-by K - a heap-allocated Python list - rather than the Python call stack.
+#3 made *tail* positions stop recursing.  #4 makes *non-tail* positions stop
+too -- the frame on `K` is the heap-allocated stand-in for the Python frame #3
+still used.  Nothing recurses; the Python call stack stays flat forever.
 
-The deeper point: the CEK machine makes the **call stack a first-class data
-structure**.  The K list at any moment is exactly the information that was
-previously spread across implicit Python stack frames - made visible,
-inspectable, and copyable.  This is what enables `call/cc`: capturing the
-current continuation means copying K.
+## The frames
 
-## Where Do the Frames Come From? (CPS and Defunctionalization)
-
-The jump from the looping evaluator (Part 3) to this machine looks large: the
-loop suddenly grows a stack of frame objects -- `IfFrame`, `ArgFrame`, and the
-rest -- that did not exist before.  Where do they come from?  They are not
-arbitrary.  Each one is a mechanical transformation of the recursive evaluator,
-in two steps.  Following the derivation makes the machine feel inevitable
-rather than invented.
-
-Recall where Part 3 left off: tail positions loop, but **non-tail**
-sub-expressions still recurse, and that recursion rides the Python call stack.
-The Python stack, in other words, was already acting as K -- it just was not
-something we could name or hold.  These two steps make it explicit.
-
-### Step 1: Make the continuation an explicit function (CPS)
-
-In the recursive evaluator, "what to do next" is implicit in the Python call
-stack: when `lEval` returns, control resumes wherever it was called from.
-*Continuation-passing style* (CPS) makes that explicit by passing an extra
-argument `k` -- a function representing "what to do with the value once I have
-it."  Instead of *returning* a value, `lEval` *calls* `k` with it:
+This minimal machine is a pure lambda calculus with `if` (a number is true
+unless it is `0`).  That tiny language needs just three frame kinds:
 
 ```python
-def lEval( expr, env, k ):           # k = the continuation: what to do with the value
-    if isinstance( expr, str ):
-        return k( env.lookup( expr ) )            # deliver the value to k
-    if not isinstance( expr, list ):
-        return k( expr )                          # atoms deliver themselves
-
-    head = expr[0]
-    if head == 'if':
-        # Evaluate the test; its continuation picks a branch and continues with k.
-        return lEval( expr[1], env,
-                      lambda t: lEval( expr[2] if t != '#f' else expr[3], env, k ) )
-    ...
+FRAME_IF   = 0   # waiting on a test value      (FRAME_IF, then, else, env)
+FRAME_ARG  = 1   # waiting on a function value   (FRAME_ARG, arg, env)
+FRAME_CALL = 2   # waiting on an argument value  (FRAME_CALL, closure)
 ```
 
-You start the whole computation with the identity continuation,
-`lEval(program, global_env, lambda v: v)`, and the final answer is whatever
-gets delivered to it.  Notice the `if` case: the inner `lambda t: ...` is the
-continuation *of the test*.  It captures exactly four things -- `expr[2]` (the
-then-branch), `expr[3]` (the else-branch), `env`, and the outer `k`.
+A frame is a plain **tagged tuple** -- the first slot is its kind, the rest is
+the data it remembers.  There are no frame *classes* and no `step` methods: a
+frame is inert data, and all the behavior lives in the machine loop.  That is
+how the real interpreters (pyScheme / cppScheme2) do it, and it is the main
+reason this machine reads cleanly.
 
-### Step 2: Turn those functions into data (defunctionalization)
-
-The evaluator only ever builds a **finite number of continuation shapes**:
-the if-continuation, the continuation waiting for a function value, the one
-waiting for each argument, the `set!`-continuation, the `begin`-continuation,
-and so on.  *Defunctionalization* replaces each shape with a small data object
-that stores exactly the variables that shape's lambda captured, plus a `step`
-method holding the lambda's body.  The if-continuation becomes:
+## The machine
 
 ```python
-class IfFrame:                       # the defunctionalized if-continuation
-    def __init__( self, then_expr, else_expr, env ):
-        self.then_expr = then_expr   # ...the variables the lambda captured...
-        self.else_expr = else_expr
-        self.env       = env
-    def step( self, t, K ):          # ...and the lambda's body, as a method.
-        branch = self.then_expr if t != '#f' else self.else_expr
-        return branch, self.env      # "evaluate branch under env, with k = the rest of K"
-```
-
-One thing is conspicuously missing: the captured outer `k`.  In CPS, `k` is
-the *next* continuation, reached by nesting one lambda inside another.
-Defunctionalized, that nesting becomes **the rest of the list K below this
-frame**.  So the correspondence is exact:
-
-| CPS (continuations as functions) | CEK (continuations as data) |
-|---|---|
-| wrap `k` in a new `lambda` | push a frame onto `K` |
-| call the continuation with a value | pop the top frame, call `step(value, K)` |
-| the identity continuation `lambda v: v` | the empty `K` (value is the final answer) |
-
-That is the whole secret.  Every frame class in the sections below --
-`IfFrame`, `BeginFrame`, `LetFrame`, `SetFrame`, `ArgFrame` -- is the
-defunctionalized form of one continuation shape, and **K is the chain of
-pending continuations made into a list**.  Because K is now ordinary data,
-capturing the continuation (`call/cc`) is nothing more than copying that list.
-
-(This direct-style -> CPS -> defunctionalized-machine derivation is general:
-it is the standard way every abstract machine of this family -- CEK, SECD --
-is obtained from an interpreter.  The frames are not a design you must invent;
-they are a transformation you can turn a crank to produce.)
-
-## The Value Problem
-
-Before the machine loop can be described, one subtlety must be addressed:
-in a Lisp that represents code as lists, both expressions and values can be
-Python lists.  A computed result `[1, 2, 3]` is visually identical to a
-function call expression `[fn, arg, arg]`.  The machine must tell them apart.
-
-The solution is a `Val` wrapper:
-
-```python
-class Val:
-    def __init__( self, v ):
-        self.v = v
-```
-
-Any computed value is wrapped in `Val` before being placed in C.  A predicate
-`is_value(C)` treats `Val` instances - and self-evaluating atoms like numbers
-and booleans - as values ready for delivery.  Any unwrapped list is treated as
-code to evaluate (an empty-list *value* reaches here already `Val`-wrapped):
-
-```python
-def is_value( c ):
-    if isinstance( c, Val ):
-        return True
-    if c in ( '#t', '#f' ):                     # boolean literals are self-evaluating data
-        return True
-    if isinstance( c, str ):                    # symbol - needs lookup
-        return False
-    if isinstance( c, list ):                   # any unwrapped list is code
-        return False
-    return True                                  # number, etc.
-```
-
-Every path in the machine that produces a value wraps it in `Val`.  Every
-path that produces an expression to evaluate leaves it unwrapped.  This
-discipline is what enables TCO: a user-function body returned without `Val`
-is treated as code in the next iteration, not as a value to deliver.
-
-The looping evaluator in EVALUATOR3-DOC did not need this distinction because
-its C register always held code and values lived in local variables.  In the
-CEK machine, C holds both - the wrapper is the only way to tell which.
-
-## The Machine Loop
-
-The main loop has three cases for C:
-
-```python
-def lEval( expr, env ):
-    C = expr
-    E = env
-    K = []   # continuation stack
+def lEval( expr, env=None ):
+    C = expr                                       # Control:      expression
+    V = None                                       # Value:        result in APPLY
+    E = Environment() if env is None else env      # Environment
+    K = []                                         # Kontinuation: a stack of frames
 
     while True:
 
-        # Case 1: C is a value - deliver it to the top continuation frame.
-        if is_value( C ):
-            v = C.v if isinstance( C, Val ) else C
+        # ----- state EVAL: descend into C, pushing frames, until a leaf -> V -----
+        while True:
+            if isinstance( C, int ):          # a number literal -> itself
+                V = C
+                break
+            elif isinstance( C, str ):        # a variable -> look it up
+                V = E.lookup( C )
+                break
+            elif C[0] == 'lambda':            # ['lambda', param, body] -> a closure
+                V = ( VAL_CLOSURE, C[1], C[2], E )
+                break
+            elif C[0] == 'if':                # ['if', test, then, else]
+                K.append( (FRAME_IF, C[2], C[3], E) )
+                C = C[1]                      # evaluate the test first (keep descending)
+            else:                             # [fn, arg] -- an application
+                K.append( (FRAME_ARG, C[1], E) )
+                C = C[0]                      # evaluate fn first (keep descending)
+
+        # ----- state APPLY: feed V to the top frame -----
+        while True:
             if not K:
-                return v                     # K empty: computation finished
+                return V
+
             frame = K.pop()
-            C, E  = frame.step( v, K )
-            continue
-
-        # Case 2: C is a symbol - look it up, Val-wrap the result.
-        if isinstance( C, str ):
-            C = Val( E.lookup( C ) )
-            continue
-
-        # Case 3: C is a non-empty list - an expression to reduce.  (A bare ()
-        # is invalid Scheme; an empty-list value arrives Val-wrapped via Case 1.)
-        head = C[0]
-        ...
-```
-
-When K is empty and a value arrives in Case 1, the entire computation is
-finished and the value is returned.  Otherwise, the top frame is popped and
-handed the value; it returns the next `(C, E)` pair for the loop.
-
-Notice that Case 1 both consumes values **and** resumes the next computation.
-There is no separate "return" path - every value flows through the same
-delivery mechanism.  When K empties, delivery becomes the final return.
-
-## Step-by-Step: Six Evaluation Paths
-
-The best way to understand the machine is to watch it run.  Each block shows
-the complete machine state at the start of that loop iteration.  E is shown
-only when it changes.
-
----
-
-### Example 1 - Constant: `42`
-
-```
-C: 42
-E: {}
-K: []
-```
-
-**Step 1** - C is a number.  `is_value` returns True.  K is empty: return `42`.
-
-**Result: 42**
-
----
-
-### Example 2 - Variable lookup: `x` where `x = 7`
-
-```
-C: x
-E: {x: 7}
-K: []
-```
-
-**Step 1** - Case 2: C is a symbol.  Look up `x` in E, get `7`, wrap in Val.
-
-```
-C: Val(7)
-K: []
-```
-
-**Step 2** - Case 1: C is a value.  K is empty: return `7`.
-
-**Result: 7**
-
----
-
-### Example 3 - Primitive call: `(+ x 1)` where `x = 2`
-
-```
-C: (+ x 1)
-E: {x: 2}
-K: []
-```
-
-**Step 1** - Case 3: non-empty list, head is not a special form.  Push `ArgFrame`,
-set `C = +`.
-
-```
-C: +
-K: [ArgFrame(fn=None, pending=[x, 1], done=[])]
-```
-
-**Step 2** - Case 2: symbol.  Look up `+`, wrap: `C = Val(fn_+)`.
-
-```
-C: Val(fn_+)
-K: [ArgFrame(fn=None, pending=[x, 1], done=[])]
-```
-
-**Step 3** - Case 1: value.  Pop `ArgFrame`.  **Phase 1**: record `fn = fn_+`,
-take `x` from pending, push self back, return `C = x`.
-
-```
-C: x
-K: [ArgFrame(fn=fn_+, pending=[1], done=[])]
-```
-
-**Step 4** - Case 2: symbol.  Look up `x`, get `2`, wrap: `C = Val(2)`.
-
-```
-C: Val(2)
-K: [ArgFrame(fn=fn_+, pending=[1], done=[])]
-```
-
-**Step 5** - Case 1: value.  Pop `ArgFrame`.  **Phase 2**: append `2` to done,
-take `1` from pending, push self back, return `C = 1`.
-
-```
-C: 1
-K: [ArgFrame(fn=fn_+, pending=[], done=[2])]
-```
-
-**Step 6** - Case 1: `1` is a self-evaluating number.  Pop `ArgFrame`.
-Phase 2: `done = [2, 1]`, pending empty.  Call `do_apply(fn_+, [2, 1])`,
-return `Val(3)`.
-
-```
-C: Val(3)
-K: []
-```
-
-**Step 7** - Case 1: value.  K is empty: return `3`.
-
-**Result: 3**
-
----
-
-### Example 4 - Nested calls: `(+ (* 2 3) 1)` - K grows to depth 2
-
-The outer `+` call cannot proceed until `(* 2 3)` is resolved.  Both calls
-push `ArgFrame` instances, stacking K to depth 2 before any unwinding begins.
-
-```
-C: (+ (* 2 3) 1)
-E: global
-K: []
-```
-
-**Step 1** - Case 3: push `ArgFrame_outer`, set `C = +`.
-
-```
-C: +
-K: [ArgFrame_outer(fn=None, pending=[(* 2 3), 1], done=[])]
-```
-
-**Step 2** - Symbol `+` -> `Val(fn_+)`.  Pop `ArgFrame_outer`.  Phase 1:
-`fn = fn_+`, next pending is `(* 2 3)`, push self back, return `C = (* 2 3)`.
-
-```
-C: (* 2 3)
-K: [ArgFrame_outer(fn=fn_+, pending=[1], done=[])]
-```
-
-**Step 3** - Case 3: `(* 2 3)` is a function call.  Push `ArgFrame_inner`.
-**K is now at depth 2.**
-
-```
-C: *
-K: [ArgFrame_outer(fn=fn_+,  pending=[1],    done=[]),
-    ArgFrame_inner(fn=None,   pending=[2, 3], done=[])]
-```
-
-**Steps 4-7** - Evaluate `*`, `2`, and `3` the same way example 3 showed.
-After `3` is delivered: `done = [2, 3]`, pending empty.
-`do_apply(fn_*, [2, 3])` returns `Val(6)`.  `ArgFrame_inner` is consumed.
-**K shrinks back to depth 1.**
-
-```
-C: Val(6)
-K: [ArgFrame_outer(fn=fn_+, pending=[1], done=[])]
-```
-
-**Step 8** - Pop `ArgFrame_outer`.  Phase 2: `done = [6]`, take `1` from
-pending, push self back, return `C = 1`.
-
-```
-C: 1
-K: [ArgFrame_outer(fn=fn_+, pending=[], done=[6])]
-```
-
-**Step 9** - `1` is self-evaluating.  Pop `ArgFrame_outer`.  `done = [6, 1]`,
-pending empty.  `do_apply(fn_+, [6, 1])` -> `Val(7)`.
-
-```
-C: Val(7)
-K: []
-```
-
-**Step 10** - K empty: return `7`.
-
-**Result: 7**
-
-Nested calls require no special handling - they fall out naturally.  Each
-pending argument that is itself a call pushes its own `ArgFrame` on top of
-the existing stack.  K depth equals the current expression nesting depth.
-
----
-
-### Example 5 - Branching: `(if (= x 0) 42 99)` where `x = 0`
-
-An `if` pushes an `IfFrame` to remember the two branches, then sets C to the
-condition expression.  The condition is itself a function call, so K holds
-two different frame types at the same time.
-
-```
-C: (if (= x 0) 42 99)
-E: {x: 0}
-K: []
-```
-
-**Step 1** - Case 3, `head = if`.  Push `IfFrame(then=42, else=99)`, set `C`
-to the condition.
-
-```
-C: (= x 0)
-K: [IfFrame(then=42, else=99)]
-```
-
-**Step 2** - Case 3: `(= x 0)` is a function call.  Push `ArgFrame`.
-K now holds **two different frame types**.
-
-```
-C: =
-K: [IfFrame(then=42, else=99),
-    ArgFrame(fn=None, pending=[x, 0], done=[])]
-```
-
-**Steps 3-6** - Evaluate `=`, `x`, and `0` exactly as in example 3.
-`do_apply(fn_=, [0, 0])` returns `Val(#t)`.  `ArgFrame` is consumed.
-
-```
-C: Val(#t)
-K: [IfFrame(then=42, else=99)]
-```
-
-**Step 7** - Case 1: pop `IfFrame`.  `#t` is not `#f`, so the then-branch is
-taken: return `(42, E)` as an
-unwrapped expression.  **No frame is pushed** - both branches are in tail
-position inside `if`.
-
-```
-C: 42
-K: []
-```
-
-**Step 8** - `42` is self-evaluating.  K empty: return `42`.
-
-**Result: 42**
-
-`IfFrame.step` never pushes anything onto K.  It simply returns one branch
-as the next expression.  Whatever computation surrounds the `if` - or nothing,
-if K was already empty - is unaffected.
-
----
-
-### Example 6 - User-defined function and TCO: `((lambda (x) (* x 2)) 5)`
-
-A user-defined function call does not execute immediately.  `do_apply` opens
-a new environment and returns the body expression **without wrapping it in
-`Val`**.  The loop sees an unwrapped expression and evaluates it as code.
-No frame was pushed for "what to do with the return value."  This is TCO.
-
-```
-C: ((lambda (x) (* x 2)) 5)
-E: global
-K: []
-```
-
-**Step 1** - Case 3: function call.  Push `ArgFrame`, set `C` to the head of
-the list - the lambda form itself.
-
-```
-C: (lambda (x) (* x 2))
-K: [ArgFrame(fn=None, pending=[5], done=[])]
-```
-
-**Step 2** - Case 3, `head = lambda`.  Construct
-`Function(params=[x], body=[(* x 2)], closure_env=global)`,
-wrap: `C = Val(fn_user)`.  No frame pushed.
-
-```
-C: Val(fn_user)
-K: [ArgFrame(fn=None, pending=[5], done=[])]
-```
-
-**Step 3** - Case 1: pop `ArgFrame`.  Phase 1: `fn = fn_user`, take `5` from
-pending, push self back, return `C = 5`.
-
-```
-C: 5
-K: [ArgFrame(fn=fn_user, pending=[], done=[])]
-```
-
-**Step 4** - `5` is self-evaluating.  Pop `ArgFrame`.  `done = [5]`, pending
-empty.  Call `do_apply(fn_user, [5])`.
-
-`do_apply` sees a user-defined function: open `new_env = {x: 5} -> global`,
-call `_begin_body([(* x 2)], new_env, K)`.
-
-`_begin_body` returns `(* x 2)` **without a `Val` wrapper**.
-
-```
-C: (* x 2)           <- unwrapped body; next iteration treats it as code
-E: {x: 5} -> global
-K: []                <- ArgFrame was popped and NOT replaced
-```
-
-This is the TCO moment.  The frame that triggered the call has been consumed.
-K is empty.  The Python call stack has not grown.  The body evaluates exactly
-as if it had been written at the top level.
-
-**Steps 5-9** - `(* x 2)` evaluates exactly as in example 3:
-`*` -> `fn_*`, `x` -> `Val(5)`, `2` is self-eval.
-`do_apply(fn_*, [5, 2])` -> `Val(10)`.
-
-```
-C: Val(10)
-K: []
-```
-
-**Step 10** - K empty: return `10`.
-
-**Result: 10**
-
-If this function called itself in tail position - `(f (- n 1))` as the last
-form in a body - the same thing would happen on every recursive call: the
-caller's `ArgFrame` is consumed by `do_apply`, the recursive call's `ArgFrame`
-is the only frame ever on K, and K never grows past depth 1 regardless of
-how many iterations the recursion runs.
-
-## K Is the Explicit Call Stack
-
-The K list at any moment is exactly the information that a recursive evaluator
-would have spread across implicit Python stack frames.
-
-Consider how the recursive evaluator from EVALUATOR1-DOC would handle `(+ x 1)`:
-
-```
-Python frame 1: evaluating '+' - "I need the function value for this call"
-Python frame 2: evaluating 'x' - "I need argument 0 for this call"
-Python frame 3: evaluating 1   - "I need argument 1 for this call"
-```
-
-In the CEK machine, that same information lives in a single `ArgFrame` object,
-mutated across three iterations:
-
-| Loop iteration | ArgFrame state |
-|---|---|
-| Evaluating `'+'` | `fn=None, pending=['x', 1], done=[]` |
-| Evaluating `'x'` | `fn=fn_+, pending=[1], done=[]` |
-| Evaluating `1` | `fn=fn_+, pending=[], done=[2]` |
-
-Each iteration that would have pushed a Python stack frame instead updates the
-ArgFrame in place and loops.  The frame is not popped until all its work is
-done and `do_apply` is called.
-
-For nested calls like `(f (g (h 1)))`, three separate `ArgFrame` instances
-accumulate on K - one per call - just as three levels of Python recursion
-would accumulate in the other evaluators.  The difference is that K is a
-heap list: it can grow to any depth without a `RecursionError`.
-
-**Tail calls** are the special case where K does not grow.  When a
-user-defined function's body is set as C and `_begin_body` returns, the
-`ArgFrame` that triggered the call has already been popped and discarded.
-Nothing new is pushed.  K stays the same size.
-
-## Continuation Frames in Depth
-
-### IfFrame
-
-The simplest frame.  Pushed when `(if cond then else)` is seen; receives
-the condition value and picks a branch:
-
-```python
-class IfFrame:
-    def __init__( self, then_expr, else_expr, env ):
-        self.then_expr = then_expr
-        self.else_expr = else_expr
-        self.env       = env
-
-    def step( self, value, K ):
-        branch = self.then_expr if value != '#f' else self.else_expr
-        return branch, self.env   # expression - NOT Val-wrapped
-```
-
-The chosen branch is returned unwrapped.  Neither branch pushes a frame -
-both are in tail position.
-
-### BeginFrame
-
-Sequences a list of forms, discarding all results except the last.  The
-last form is delivered in tail position by *not* pushing the frame back:
-
-```python
-class BeginFrame:
-    def __init__( self, remaining, env ):
-        self.remaining = remaining
-        self.env       = env
-
-    def step( self, value, K ):
-        if len( self.remaining ) == 1:
-            return self.remaining[0], self.env   # tail - no re-push
-        nxt            = self.remaining[0]
-        self.remaining = self.remaining[1:]
-        K.append( self )                          # more forms remain
-        return nxt, self.env
-```
-
-For `(begin a b c)`, the machine pushes `BeginFrame([b, c])` and evaluates
-`a`.  The frame receives `a`'s value (discards it), shrinks to `[c]`, pushes
-itself, evaluates `b`.  The frame receives `b`'s value, sees `remaining = [c]`
-has length 1, returns `c` without re-pushing - `c` is the tail.
-
-### LetFrame
-
-The `let` form binds multiple variables, but all init expressions must be
-evaluated in the **outer** environment before any binding takes effect.
-`LetFrame` enforces this by holding a reference to `outer_env` and using it
-for every init evaluation, only opening the new scope once all values are
-collected:
-
-```python
-class LetFrame:
-    def step( self, value, K ):
-        self.bound[self.current_name] = value
-        if self.pending:
-            name, form        = self.pending[0]
-            self.current_name = name
-            self.pending      = self.pending[1:]
-            K.append( self )
-            return form, self.outer_env      # always the outer env
-        new_env = Environment( parent=self.outer_env, bindings=self.bound )
-        return _begin_body( self.body, new_env, K )
-```
-
-This is exactly what distinguishes `let` from `let*`: a `LetStarFrame` would
-bind each name immediately and pass the growing inner environment to the next
-init expression instead of `outer_env`.
-
-### ArgFrame
-
-The most complex frame.  A single `ArgFrame` manages all phases of one
-function call - evaluating the function, evaluating each argument in order,
-and finally dispatching:
-
-```python
-class ArgFrame:
-    def step( self, value, K ):
-        if self.fn is None:
-            # Phase 1: received the function.
-            self.fn = value
-            if not self.pending:
-                return do_apply( self.fn, self.done, self.env, K )
-            nxt          = self.pending[0]
-            self.pending = self.pending[1:]
-            K.append( self )
-            return nxt, self.env
-
-        # Phase 2: received an argument value.
-        self.done.append( value )
-        if self.pending:
-            nxt          = self.pending[0]
-            self.pending = self.pending[1:]
-            K.append( self )
-            return nxt, self.env
-
-        return do_apply( self.fn, self.done, self.env, K )
-```
-
-The frame is pushed once per call and re-pushed up to `1 + len(args)` times
-before finally calling `do_apply`.  Each re-push corresponds to one sub-
-expression that would have been a recursive `lEval` call in the earlier
-evaluators.
-
-## Function Calls and TCO
-
-When all argument values are in hand, `ArgFrame` calls `do_apply`:
-
-```python
-def do_apply( fn, args, env, K ):
-    if callable( fn ):
-        return Val( fn( args ) ), env    # primitive: Val-wrap the result
-
-    # User-defined function: open a new scope and begin the body.
-    new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
-    return _begin_body( fn.body, new_env, K )
-
-def _begin_body( body, env, K ):
-    if not body:
-        return Val( [] ), env
-    if len( body ) > 1:
-        K.append( BeginFrame( list( body[1:] ), env ) )
-    return body[0], env              # first body form - NOT Val-wrapped
-```
-
-The critical line is the last one.  The first body form is returned
-**without** a `Val` wrapper.  On the next loop iteration `is_value` is
-False, so the machine evaluates it as code.  No new Python stack frame was
-created anywhere in this chain - `do_apply` and `_begin_body` both return
-immediately to the main loop.
-
-For a **tail call** - a function call in the final position of a body:
-
-1. `ArgFrame` was the only frame pushed for this call.
-2. It delivers args to `do_apply`, then is discarded.
-3. `do_apply` returns an unwrapped expression.
-4. The main loop evaluates that expression with K unchanged (possibly empty).
-
-K does not grow.  Python call stack depth stays constant.
-
-For a **non-tail call** - a function call whose result feeds into further
-computation (e.g. an argument to an outer call):
-
-1. The outer `ArgFrame` is on K, waiting for this sub-result.
-2. `do_apply` sets C to the callee's body; K still has the outer frame on it.
-3. K has grown by whatever frames the callee's body evaluation requires.
-
-K depth grows with nesting depth, just as the Python call stack would in the
-earlier evaluators.  The difference is that K lives on the heap - there is
-no `RecursionError` limit.
-
-## The Complete Evaluator
-
-```python
-def lEval( expr, env ):
-    C = expr
-    E = env
-    K = []
-
-    while True:
-
-        if is_value( C ):
-            v = C.v if isinstance( C, Val ) else C
-            if not K:
-                return v
-            frame = K.pop()
-            C, E  = frame.step( v, K )
-            continue
-
-        if isinstance( C, str ):
-            C = Val( E.lookup( C ) )
-            continue
-
-        head = C[0]
-
-        if head == 'if':
-            then_ = C[2] if len( C ) > 2 else []
-            else_ = C[3] if len( C ) > 3 else []
-            K.append( IfFrame( then_, else_, E ) )
-            C = C[1]
-            continue
-
-        if head == 'begin':
-            if len( C ) <= 1:
-                C = Val( [] )
-                continue
-            if len( C ) == 2:
-                C = C[1]
-                continue
-            K.append( BeginFrame( list( C[2:] ), E ) )
-            C = C[1]
-            continue
-
-        if head == 'let':
-            vardefs = C[1]
-            body    = list( C[2:] )
-            if not vardefs:
-                C, E = _begin_body( body, Environment( parent=E ), K )
-                continue
-            pairs             = [(vd[0], vd[1]) for vd in vardefs]
-            first_name, first = pairs[0]
-            K.append( LetFrame( first_name, pairs[1:], {}, body, E ) )
-            C = first
-            continue
-
-        if head == 'set!':
-            K.append( SetFrame( C[1], E ) )
-            C = C[2]
-            continue
-
-        if head == 'lambda':
-            C = Val( Function( C[1], list( C[2:] ), E ) )
-            continue
-
-        if head == 'quote':
-            C = Val( C[1] )
-            continue
-
-        # Function call: push ArgFrame and reduce the function position first.
-        K.append( ArgFrame( None, list( C[1:] ), [], E ) )
-        C = C[0]
-        continue
-```
-
-Frame class definitions (`IfFrame`, `BeginFrame`, `LetFrame`, `SetFrame`,
-`ArgFrame`) and the supporting `Environment`, `Function`, `Val`, `is_value`,
-`do_apply`, and `_begin_body` are shown in full in the example file.
+            ftag  = frame[0]
+
+            if ftag == FRAME_IF:              # (FRAME_IF, then, else, env)
+                C = frame[2] if V == 0 else frame[1]   # 0 is false, all else true
+                E = frame[3]
+                break
+
+            elif ftag == FRAME_ARG:           # (FRAME_ARG, arg, env)
+                K.append( (FRAME_CALL, V) )   # remember the function value
+                C = frame[1]                  # evaluate the argument next
+                E = frame[2]
+                break
+
+            elif ftag == FRAME_CALL:          # (FRAME_CALL, closure)
+                _, param, body, clo_env = frame[1]
+                E = Environment( parent=clo_env, bindings={ param: V } )
+                C = body                      # evaluate the body (no frame pushed!)
+                break
+
+        # fall through to the outer loop -- re-enter EVAL with the new C/E
+```
+
+A few things to notice in EVAL: the leaf cases set `V` and `break` (down to
+APPLY); the compound cases push a frame, reassign `C`, and *do not* break, so
+the EVAL loop keeps descending.  In APPLY, every frame either returns (`K`
+empty) or sets up a fresh `C`/`E` and `break`s back up to EVAL.
+
+## Step-by-Step: Watching the Machine Run
+
+The best way to understand the machine is to watch it step.  Each table shows
+the registers at the *start* of a loop iteration; `E` is shown only when it
+changes.
+
+### Constant: `42`
+
+| step | state | C | V | K |
+|---|---|---|---|---|
+| 1 | EVAL  | `42` | -    | `[]` |
+| 2 | APPLY | -    | `42` | `[]` -> **return 42** |
+
+A number is a leaf: EVAL sets `V` and breaks to APPLY, which finds `K` empty and
+returns.
+
+### Variable: `x`, where `x = 7`
+
+| step | state | C | V | K |
+|---|---|---|---|---|
+| 1 | EVAL  | `x` | -   | `[]` |
+| 2 | APPLY | -   | `7` | `[]` -> **return 7** |
+
+EVAL looks `x` up in `E` and sets `V`.  Same shape as a constant -- a variable is
+just a leaf that takes one lookup.
+
+### A function call: `((lambda (x) x) 7)`
+
+Written `[['lambda', 'x', 'x'], 7]`.  Here `K` does some work:
+
+| step | state | C | V | E | K |
+|---|---|---|---|---|---|
+| 1 | EVAL  | `[[lambda x x], 7]` | -       | `{}`    | `[]` |
+| 2 | EVAL  | `[lambda x x]`      | -       | `{}`    | `[ARG 7]` |
+| 3 | APPLY | -                   | closure | `{}`    | `[ARG 7]` |
+| 4 | EVAL  | `7`                 | -       | `{}`    | `[CALL clo]` |
+| 5 | APPLY | -                   | `7`     | `{}`    | `[CALL clo]` |
+| 6 | EVAL  | `x`                 | -       | `{x:7}` | `[]` |
+| 7 | APPLY | -                   | `7`     | `{x:7}` | `[]` -> **return 7** |
+
+- **Step 1->2** -- an application: push `FRAME_ARG` to remember the argument `7`,
+  then descend into the operator.
+- **Step 3** -- the operator evaluated to a closure; APPLY pops `FRAME_ARG`,
+  swaps it for a `FRAME_CALL` holding that closure, and goes off to evaluate the
+  argument.
+- **Step 5->6** -- the argument `7` has arrived; `FRAME_CALL` binds `x` to `7`
+  in a fresh scope, sets `C` to the body, and **pushes nothing**.
+- **Step 7** -- the body `x` looks up to `7`; `K` is empty; done.
+
+`K` rose to depth 1 (first the argument, then the function) and fell back to
+empty.  Every "what to do next" the recursive evaluator kept on the Python stack
+is here a frame on `K` instead.
+
+### Nested closures: `(((lambda (x) (lambda (y) x)) 3) 9)`
+
+The curried constant function -- the inner closure captures `x = 3`, then ignores
+its own argument `9`.  Watch `K` reach depth 2:
+
+| step | state | C | V | E | K |
+|---|---|---|---|---|---|
+| 1 | EVAL  | `[[[lam x [lam y x]] 3] 9]` | -     | `{}`           | `[]` |
+| 2 | EVAL  | `[[lam x [lam y x]] 3]`     | -     | `{}`           | `[ARG 9]` |
+| 3 | EVAL  | `[lam x [lam y x]]`         | -     | `{}`           | `[ARG 9, ARG 3]` |
+| 4 | APPLY | -                           | clo-x | `{}`           | `[ARG 9, ARG 3]` |
+| 5 | EVAL  | `3`                         | -     | `{}`           | `[ARG 9, CALL clo-x]` |
+| 6 | APPLY | -                           | `3`   | `{}`           | `[ARG 9, CALL clo-x]` |
+| 7 | EVAL  | `[lam y x]`                 | -     | `{x:3}`        | `[ARG 9]` |
+| 8 | APPLY | -                           | clo-y | `{x:3}`        | `[ARG 9]` |
+| 9 | EVAL  | `9`                         | -     | `{}`           | `[CALL clo-y]` |
+| 10| APPLY | -                           | `9`   | `{}`           | `[CALL clo-y]` |
+| 11| EVAL  | `x`                         | -     | `{y:9}->{x:3}` | `[]` |
+| 12| APPLY | -                           | `3`   | `{y:9}->{x:3}` | `[]` -> **return 3** |
+
+The key moment is **step 7**: evaluating the inner `(lambda (y) x)` builds a
+closure `clo-y` whose captured environment is `{x:3}`.  When `clo-y` is finally
+called (step 10) its body `x` is looked up through that captured scope -- step
+11, the new `{y:9}` chained onto `{x:3}` -- and finds `3`, regardless that the
+argument was `9`.  That is lexical scope, on the explicit machine.
+
+## Tail-call optimization, for free
+
+Look again at `FRAME_CALL`: it binds the parameter, sets `C` to the body, and
+**pushes nothing**.  The call does not leave a frame behind.  So if the body
+ends in another call (a tail call), that call runs at the *same* `K` depth as
+this one -- the stack does not grow.  TCO is not a special case here; it falls
+out of "applying a function pushes no frame."
+
+(In this pure-λ toy there is no way to write a deep loop -- that needs
+recursion by name, which needs `set!` or the Y-combinator -- so we can only
+*describe* the TCO here.  `EVALUATOR5-DOC` adds the language back and proves it
+with `(countdown 100000)`.)
+
+## Why so small a language?
+
+Making the continuation explicit is the single hardest idea in the series.  So
+this chapter strips the language down to the smallest thing that still has
+closures and control flow -- pure lambda calculus plus `if` -- to keep the
+*machine* in the foreground.  The fuller language of toys 1-3 (`let`, `set!`,
+`begin`, primitives, multi-argument calls, `#t`/`#f`) does not change the
+machine's shape at all; it only adds more frame kinds.  Showing exactly that is
+the job of `EVALUATOR5-DOC`.
 
 ## Running the Example
 
 The complete working code is in `examples/IttyBittyLisp4.py`.
-It runs the same countdown-from-100,000 as `IttyBittyLisp3.py`.  The
-difference is invisible in the output but real in the machinery: in
-IttyBittyLisp3 evaluating `(= n 0)` and `(- n 1)` each recurse into
-`lEval`; here those evaluations push `ArgFrame` instances onto K and loop.
-At no point during the countdown does the Python call stack grow beyond a
-constant handful of frames.
 
 ```
 python examples/IttyBittyLisp4.py
 ```
 
-The real interpreter's `Evaluator.py` extends this design with tracing, macros,
-multiple values, continuations, and the full lambda-list argument binding.
-Because K is an explicit Python list, capturing the entire continuation
-at any point - the basis of `call/cc` - requires nothing more than
-copying K.
+*Next: `EVALUATOR5-DOC` puts the full language back on this same machine.*
 
 ## Challenges
 
-*(Extending the language -- macros, tracing, new special forms -- is easier on
-the looping evaluator; see EVALUATOR3-DOC's challenges.  These two belong here
-because they genuinely need the CEK machine's explicit `K` stack.)*
+- **Add booleans and Scheme truthiness.** Give the machine real `#t`/`#f`
+  literals (self-evaluating, like numbers) and change `FRAME_IF` to treat `#f`
+  as the only false value.  This is the first step `EVALUATOR5-DOC` takes --
+  try it before reading ahead.
 
-- **Implement `call/cc`.** `(call/cc (lambda (k) ...))` captures the current
-  continuation -- the entire K stack -- and passes it as an argument.
-  Calling `k` with a value discards the current K and reinstates the
-  captured one.  Start with escape continuations (calling `k` only from
-  within the dynamic extent of the `call/cc`): capturing is `list(K)` and
-  reinstating is `K[:] = captured`.  For **full re-invocable continuations**,
-  each mutable frame must also be copied so that re-invocation cannot corrupt
-  the saved state; add a `copy()` method to every frame class (mutable frames
-  return a new instance; immutable frames return `self`), then capture with
-  `[f.copy() for f in K]`.  This interpreter uses this full approach.
+- **Trace a nested program.** Hand-trace `(((lambda (x) (lambda (y) x)) 3) 9)`
+  as a `C / V / E / K` table like the one above.  Watch the curried closures
+  capture their environments and the `K` stack stay shallow.
 
-- **Implement `dynamic-wind`.** `(dynamic-wind before thunk after)` guarantees
-  that `after` runs whenever control leaves the thunk -- whether by normal
-  return, exception, or continuation jump.  It requires tracking "winders"
-  alongside K and running the appropriate before/after thunks as
-  continuations cross their boundaries.  This is a significant challenge
-  but it reveals exactly why continuations and `dynamic-wind` interact the
-  way they do.
+- **Add a one-argument primitive.** Put a Python function (say a `double`) in
+  the starting environment and make the application path apply it when the
+  function value is callable rather than a closure.  Notice that a primitive
+  *produces a value* -- so, unlike a closure, it keeps the machine in the APPLY
+  state instead of dropping back to EVAL.  (This is the change that makes the
+  APPLY loop genuinely iterate; `EVALUATOR5-DOC` leans on it.)
