@@ -92,6 +92,16 @@ scope rather than raising an error.
 active at the point `lambda` was evaluated.  When the function is called, the
 new argument scope is chained off that captured env, not the caller's.
 
+These two classes are built on opposite principles, on purpose.  `Environment`
+**hides** its fields -- `_bindings`, `_parent`, and `_global` all carry a leading
+underscore, and only `lookup`, `set`, and the constructor ever touch them.  That
+encapsulation means you could change *how* a scope stores its bindings without
+editing a single line of the evaluator.  `Function` is the reverse: a plain
+record (a C-style struct) -- public fields, just a constructor -- whose
+*behavior* lives in the evaluator beside the rest of the dispatch rather than as
+a `__call__` method on the class.  A useful rule of thumb: encapsulate what has
+invariants to protect; leave open what is merely data.
+
 ## Updated Global Environment
 
 The global environment becomes the root `Environment` instead of a plain dict.  The
