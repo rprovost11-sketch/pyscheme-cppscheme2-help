@@ -35,9 +35,17 @@ Run with: python IttyBittyLisp3.py
 
 class Environment:
     def __init__( self, parent=None, bindings=None ):
-        self._parent = parent
-        self._global = parent._global if parent else self
-        self._bindings   = dict(bindings or {})
+        self._bindings = dict(bindings or {})
+        self._parent   = parent
+        self._global   = parent._global if parent else self   # direct handle to the root
+
+    def lookup( self, name ):
+        scope = self
+        while scope:
+            if name in scope._bindings:
+                return scope._bindings[name]
+            scope = scope._parent
+        raise NameError( f'Unbound variable: {name}' )
 
     def set( self, name, value ):
         # Walk to the innermost scope that already owns the name.
@@ -47,17 +55,10 @@ class Environment:
                 scope._bindings[name] = value
                 return value
             scope = scope._parent
-        # Name not found.  Create it in the global env.
+        # Name not found anywhere -- create it in the global scope.  The _global
+        # handle goes straight there, with no second walk down the chain.
         self._global._bindings[name] = value
         return value
-
-    def lookup( self, name ):
-        scope = self
-        while scope:
-            if name in scope._bindings:
-                return scope._bindings[name]
-            scope = scope._parent
-        raise NameError( f'Unbound variable: {name}' )
 
 
 # ---------------------------------------------------------------------------

@@ -44,30 +44,30 @@ independent copy of the local variables.
 
 class Environment:
     def __init__( self, parent=None, bindings=None ):
-        self.vars    = dict(bindings or {})
-        self.parent  = parent
-        self._global = parent._global if parent else self   # direct handle to the root
+        self._bindings = dict(bindings or {})
+        self._parent   = parent
+        self._global   = parent._global if parent else self   # direct handle to the root
 
     def lookup( self, name ):
         scope = self
         while scope:
-            if name in scope.vars:
-                return scope.vars[name]
-            scope = scope.parent
+            if name in scope._bindings:
+                return scope._bindings[name]
+            scope = scope._parent
         raise NameError( f'Unbound variable: {name}' )
 
-    def set( self, name, val ):
+    def set( self, name, value ):
         # Walk to the innermost scope that already owns the name.
         scope = self
         while scope:
-            if name in scope.vars:
-                scope.vars[name] = val
-                return val
-            scope = scope.parent
+            if name in scope._bindings:
+                scope._bindings[name] = value
+                return value
+            scope = scope._parent
         # Name not found anywhere -- create it in the global scope.  The _global
         # handle goes straight there, with no second walk down the chain.
-        self._global.vars[name] = val
-        return val
+        self._global._bindings[name] = value
+        return value
 
 # ---------------------------------------------------------------------------
 # Function: a closure capturing its lexical environment
@@ -143,9 +143,11 @@ def lEval( expr, env ):
     elif expr[0] == 'let':
         vardefs = expr[1]               # list of [name, init-expr] pairs
         body    = expr[2:]
-        new_env = Environment( parent=env )
-        for vardef in vardefs:
-            new_env.vars[vardef[0]] = lEval( vardef[1], env )
+        # Eval each init in the outer env, then open one new scope holding them all,
+        # passed through the constructor so the bindings stay private to Environment.
+        new_env = Environment( parent=env,
+                               bindings={ name: lEval( init, env )
+                                          for name, init in vardefs } )
         for sub in body[:-1]:
             lEval( sub, new_env )
         return lEval( body[-1], new_env )
