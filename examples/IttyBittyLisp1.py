@@ -44,17 +44,12 @@ Run with: python IttyBittyLisp1.py
 
 def lEval( expr, env ):
     # ---- State = EVAL (dispatch on expression syntax) ----
-    if expr in ('#t', '#f'):           # boolean literals self-evaluate (they are
-        return expr                    # data, not identifiers -- never looked up)
-    elif isinstance(expr, str):        # a symbol -- look it up in the environment
-        return env[expr]
-    elif not isinstance(expr, list):   # everything else evaluates to itself
+    if expr in ('#t', '#f'):           # boolean -> return unchanged
         return expr
-
-    # expr is a non-empty list -- a special form or a procedure call.  (A bare
-    # () is not a valid Scheme expression.)
-
-    # Handle Special operators inline
+    elif isinstance(expr, str):        # symbol -> look it up
+        return env[expr]
+    elif not isinstance(expr, list):   # other non-lists -> return unchanged
+        return expr
     elif expr[0] == 'set!':
         # Real Scheme separates `define` (introduce a binding) from `set!`
         # (assign an existing one); this tiny Lisp uses one lenient `set!`.
@@ -64,10 +59,9 @@ def lEval( expr, env ):
         return val
 
     elif expr[0] == 'if':
-        condExpr, thenBody, elseBody = expr[1:]
-        conditionVal = lEval(condExpr, env)
-        # Scheme truthiness: every value except #f is true.
-        return lEval(elseBody if conditionVal == '#f' else thenBody, env)
+        condExpr, thenExpr, elseExpr = expr[1:]
+        condVal = lEval(condExpr, env)
+        return lEval(elseExpr if condVal == '#f' else thenExpr, env)
 
     elif expr[0] == 'begin':
         for subExpr in expr[1:-1]:     # non-tail forms: evaluated for effect
@@ -91,12 +85,17 @@ def lEval( expr, env ):
 # Primitives and global environment
 # ---------------------------------------------------------------------------
 
+def lisp_print( args ):
+    print( args[0] )
+    return args[0]       # returned, so print composes inside a larger expression
+
 global_env = {
     '+':     lambda args: args[0] + args[1],
     '-':     lambda args: args[0] - args[1],
     '*':     lambda args: args[0] * args[1],
     '=':     lambda args: '#t' if args[0] == args[1] else '#f',
     '<':     lambda args: '#t' if args[0] <  args[1] else '#f',
+    'print': lisp_print,
 }
 
 
@@ -132,6 +131,13 @@ def main() -> None:
     # Arithmetic primitives.
     run( ['+', ['-', 10, 7], 'a'] )
     run( ['*', 3, 4] )
+
+    # A side-effecting primitive.  Unlike +, -, *, =, <, the print primitive
+    # reaches outside the evaluator -- and it *returns* its argument, so it
+    # composes inside a larger expression.  Because run() evaluates before it
+    # echoes, the raw 10 (the effect) prints above the >>> line, and 15 (the
+    # returned 10, flowed on into +) is the value.
+    run( ['+', ['print', 10], 5] )
 
     # Comparison: = and < return #t (true) or #f (false).
     run( ['=', 'a', 2] )

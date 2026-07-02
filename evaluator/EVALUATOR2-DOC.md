@@ -35,6 +35,69 @@ A useful side-effect: because each call opens its own fresh scope, recursive
 calls do not interfere with each other.  Each level of recursion has its own
 independent copy of the local variables.
 
+## Closures from the programmer's seat
+
+Before implementing closures it is worth knowing what one *is* from the outside,
+because you have almost certainly written them already - just without the name.
+In Python:
+
+```python
+def make_adder( n ):
+    def add( x ):
+        return n + x      # add refers to n, which belongs to make_adder
+    return add
+
+add5 = make_adder( 5 )    # make_adder has returned...
+add5( 3 )                 # ...yet add5 still knows n = 5  ->  8
+```
+
+`make_adder` has returned, its call frame is gone, and still `add5` remembers
+`n = 5`.  A function bundled with the variables it referred to from its
+enclosing scope is called a **closure**, and `n` is a *captured* variable.  You
+reach `n` only by calling `add5`; there is no other handle to it.
+
+The language we are building has the same behavior.  Here is `make_adder`
+transliterated, and then a second closure that shows the two properties that
+make closures more than a curiosity - captured state can be *mutated*, and each
+construction is *independent*:
+
+```scheme
+(set! make-adder
+  (lambda (n)
+    (lambda (x) (+ n x))))     ; the inner lambda captures n
+
+(set! add5 (make-adder 5))
+(add5 3)                       ; => 8   -- n = 5 lived on inside add5
+
+(set! make-counter
+  (lambda ()
+    (let ((count 0))                                  ; private state...
+      (lambda () (begin (set! count (+ count 1))      ; ...mutated by set!...
+                        count)))))
+
+(set! c1 (make-counter))
+(set! c2 (make-counter))
+(c1)   ; => 1
+(c1)   ; => 2    -- the same captured count, incremented and remembered
+(c2)   ; => 1    -- ...but c2 captured its OWN count, untouched by c1
+```
+
+So a closure gives a programmer three things, and they are worth naming because
+the rest of this series - and the optional OO fork - leans on all three:
+
+- **capture** - the inner function keeps the variables it saw when defined
+  (`n`, `count`)
+- **persistence and mutation** - that captured state outlives the call that
+  created it, and `set!` can change it in place
+- **independence** - each call to the maker (`make-counter`) captures a *fresh*
+  set of variables, so `c1` and `c2` never collide
+
+Everything below is the machinery that delivers exactly this.  The one idea that
+makes it work is that a function must remember the environment it was *defined*
+in - so watch for the `Function.env` field, and the moment a call chains its new
+scope off that captured env rather than the caller's.  That single choice is the
+whole of what you just saw.
+
 ## Environment and Function
 
 ```python
@@ -130,60 +193,69 @@ user-defined function call path) and switches from plain dict operations to
 
 ```python
 def lEval( expr, env ):
-    if expr in ( '#t', '#f' ):         # boolean literals self-evaluate (not identifiers)
-        return expr
-    elif isinstance( expr, str ):      # symbol -- variable lookup
-        return env.lookup( expr )
-    elif not isinstance( expr, list ): # number, etc. -- self-evaluate
+
+    # ---- State = EVAL (dispatch on expression syntax) ----
+    if expr in ('#t', '#f'):           # boolean literals self-evaluate (they are
+        return expr                    # data, not identifiers -- never looked up)
+    elif isinstance(expr, str):        # a symbol -- look it up in the environment
+        return env.lookup(expr)
+    elif not isinstance(expr, list):   # everything else evaluates to itself
         return expr
 
-    # expr is a non-empty list -- a special form or procedure call.  (A bare ()
-    # is not a valid Scheme expression.)  Every special form is one more arm of
-    # this single dispatch chain; the final else handles procedure calls.
+    # expr is a non-empty list -- a special form or a procedure call.  (A bare
+    # () is not a valid Scheme expression.)
+
+    # Handle Special operators inline
+    elif expr[0] == 'set!':
+        name, valExpr = expr[1:]
+        val = lEval(valExpr, env)
+        return env.set(name, val)
 
     elif expr[0] == 'if':
-        cond = lEval( expr[1], env )
-        return lEval( expr[2] if cond != '#f' else expr[3], env )  # #f is the only false
+        condExpr, thenExpr, elseExpr = expr[1:]
+        condVal = lEval(condExpr, env)
+        return lEval(elseExpr if condVal == '#f' else thenExpr, env)
 
     elif expr[0] == 'begin':
-        for sub in expr[1:-1]:
-            lEval( sub, env )
-        return lEval( expr[-1], env )
-
-    elif expr[0] == 'let':
-        vardefs = expr[1]               # list of [name, init-expr] pairs
-        body    = expr[2:]
-        # Eval each init in the outer env, then open one new scope holding them all,
-        # passed through the constructor so the bindings stay private to Environment.
-        new_env = Environment( parent=env,
-                               bindings={ name: lEval( init, env )
-                                          for name, init in vardefs } )
-        for sub in body[:-1]:
-            lEval( sub, new_env )
-        return lEval( body[-1], new_env )
-
-    elif expr[0] == 'set!':
-        val = lEval( expr[2], env )
-        env.set( expr[1], val )
-        return val
+        for subExpr in expr[1:-1]:     # non-tail forms: evaluated for effect
+            lEval(subExpr, env)
+        return lEval(expr[-1], env)    # tail form: its value is the result
 
     elif expr[0] == 'lambda':
-        return Function( expr[1], expr[2:], env )
+        params, *body = expr[1:]
+        return Function(params, body, env)
 
     elif expr[0] == 'quote':
         return expr[1]
 
-    # Otherwise it's a function call: evaluate the operator and all arguments.
-    else:
-        fn, *args = [lEval( subexpr, env ) for subexpr in expr]
-        if callable( fn ):               # Python primitive
-            return fn( args )
+    elif expr[0] == 'let':
+        bindingPairs, *body = expr[1:]
+        # Eval each init in the OUTER env, then open one new scope holding them all,
+        # passed through the constructor so the bindings stay private to Environment.
+        initialBindings = { name: lEval(initExpr, env) for name, initExpr in bindingPairs }
+        new_env = Environment( parent=env, bindings=initialBindings )
 
-        # User-defined function: bind arguments in a new scope on the captured env.
-        new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
-        for sub in fn.body[:-1]:
-            lEval( sub, new_env )
-        return lEval( fn.body[-1], new_env )
+        # Execute body in new_env
+        for subExpr in body[:-1]:             # non-tail body forms
+            lEval(subExpr, new_env)
+        return lEval(body[-1], new_env)       # tail body form
+
+    else:
+        fn, *args = [ lEval(elt, env) for elt in expr ]   # eval operator + operands
+
+        # ---- State = APPLY (invoke a procedure on evaluated args) ----
+        if callable(fn):                   # primitive implemented in Python
+            return fn(args)
+        else:
+            # user-defined function: evaluate its body in a fresh local scope chained
+            # off the *captured* (lexical) environment, not the caller's.
+            initialBindings = dict(zip(fn.params, args))
+            new_env = Environment(parent=fn.env, bindings=initialBindings)
+
+            # Execute the body in new_env
+            for subExpr in fn.body[:-1]:       # non-tail body forms
+                lEval(subExpr, new_env)
+            return lEval(fn.body[-1], new_env)   # tail body form
 ```
 
 What changed from Part 1:

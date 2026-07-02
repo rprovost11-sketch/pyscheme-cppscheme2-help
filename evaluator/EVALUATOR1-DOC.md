@@ -21,50 +21,47 @@ just the essential structure.
 
 ```python
 def lEval( expr, env ):
-    # Boolean literals self-evaluate -- they are data, not identifiers, so
-    # they must be recognized before the symbol-lookup branch.
-    if expr in ('#t', '#f'):
-        return expr
-    # A string is a variable name -- look it up in the environment.
-    elif isinstance(expr, str):
+    # ---- State = EVAL (dispatch on expression syntax) ----
+    if expr in ('#t', '#f'):           # boolean literals self-evaluate (they are
+        return expr                    # data, not identifiers -- never looked up)
+    elif isinstance(expr, str):        # a symbol -- look it up in the environment
         return env[expr]
-    # Any other non-list atom (int, float, ...) evaluates to itself.
-    elif not isinstance(expr, list):
+    elif not isinstance(expr, list):   # everything else evaluates to itself
         return expr
 
-    # expr is a non-empty list -- a special form or procedure call.  (A bare ()
-    # is not a valid Scheme expression.)  Each special form is one more arm of
-    # this single dispatch chain; the final else handles procedure calls.
+    # expr is a non-empty list -- a special form or a procedure call.  (A bare
+    # () is not a valid Scheme expression.)
 
-    # Special forms: the operator names a form that controls its own evaluation.
-    # 'if' must NOT evaluate both branches -- only the one that is taken.
-    elif expr[0] == 'if':
-        condValue = lEval( expr[1], env )
-        # Scheme truthiness: every value except #f is true (so 0 and the
-        # empty list are true).  Dispatch on #f, not Python truthiness.
-        return lEval( expr[2] if condValue != '#f' else expr[3], env )
-
-    elif expr[0] == 'begin':
-        for sub in expr[1:-1]:
-            lEval( sub, env )             # non-tail forms: recurse
-        return lEval( expr[-1], env )
-
-    # 'set!' must NOT evaluate the variable name -- only the value expression.
+    # Handle Special operators inline
     elif expr[0] == 'set!':
-        var, valExpr = expr[1:]
+        # Real Scheme separates `define` (introduce a binding) from `set!`
+        # (assign an existing one); this tiny Lisp uses one lenient `set!`.
+        name, valExpr = expr[1:]
         val = lEval(valExpr, env)
-        env[var] = val
+        env[name] = val
         return val
 
-    # 'quote' returns its argument unevaluated.
+    elif expr[0] == 'if':
+        condExpr, thenExpr, elseExpr = expr[1:]
+        condVal = lEval(condExpr, env)
+        return lEval(elseExpr if condVal == '#f' else thenExpr, env)
+
+    elif expr[0] == 'begin':
+        for subExpr in expr[1:-1]:     # non-tail forms: evaluated for effect
+            lEval(subExpr, env)
+        return lEval(expr[-1], env)    # tail form: its value is the result
+
     elif expr[0] == 'quote':
         return expr[1]
 
-    # Otherwise it's a regular function call: evaluate everything -- the operator
-    # and all arguments -- then call the resulting function with the values.
     else:
-        fn, *evaluatedArgs = [ lEval(subExpr, env) for subExpr in expr ]
-        return fn( evaluatedArgs )
+        # Call a primitive
+        fn, *args = [ lEval(elt, env) for elt in expr ]   # eval operator + operands
+
+        # ---- State = APPLY (invoke a procedure on evaluated args) ----
+        # This minimal Lisp has only primitives (no lambda yet), so every callable
+        # is a plain Python function.
+        return fn( args )
 ```
 
 Notice the shape: it is a single `if`/`elif`/.../`else` chain, so **exactly one

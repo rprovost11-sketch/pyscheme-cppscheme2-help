@@ -21,6 +21,15 @@ The **Starter Ladder** below is the gentle exception to "bigger projects": four
 small, closely related special forms, sequenced so each one models the next.
 It is the recommended on-ramp -- start here before the larger numbered projects.
 
+*Try this before you extend anything:* `lEval`'s dispatch is one long
+`if / elif ... / else` chain, and exactly one branch runs each time.  Try breaking
+it in two: let the atom cases (`#t/#f`, symbol, non-list) `return` early, then set
+`head = expr[0]` and start a *fresh* `if head == 'set!': ...` for the compound
+forms.  Run the tests -- they all still pass.  The interpreter does not care how
+the branches are grouped; the single chain was for the *reader*, not the machine.
+That is the spirit of these toys: simple, whole starting points to experiment
+against -- not rules to follow.
+
 
 ## Starter Ladder: New Special Forms
 

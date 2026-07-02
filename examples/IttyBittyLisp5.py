@@ -170,7 +170,8 @@ def lEval( expr, env ):
                     V = fn( args )
                     continue                   # stay in APPLY
                 _, params, body, clo_env = fn  # closure: bind params, run the body
-                E = Environment( parent=clo_env, bindings=dict( zip(params, args) ) )
+                initialBindings = dict( zip(params, args) )
+                E = Environment( parent=clo_env, bindings=initialBindings )
                 if len(body) > 1:
                     K.append( (FRAME_SEQ, body[1:], E) )
                 C = body[0]
@@ -183,14 +184,19 @@ def lEval( expr, env ):
 # Primitives and global environment
 # ---------------------------------------------------------------------------
 
-global_env = Environment( bindings={
+def lisp_print( args ):
+    print( args[0] )
+    return args[0]       # returned, so print composes inside a larger expression
+
+globalBindings = {
     '+':     lambda args: args[0] + args[1],
     '-':     lambda args: args[0] - args[1],
     '*':     lambda args: args[0] * args[1],
     '=':     lambda args: '#t' if args[0] == args[1] else '#f',
     '<':     lambda args: '#t' if args[0] <  args[1] else '#f',
-    'print': lambda args: (print( args[0] ), args[0])[1],
-} )
+    'print': lisp_print,
+}
+global_env = Environment( bindings=globalBindings )
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +222,14 @@ def run( expr ):
 
 def main():
     run( ['+', ['-', 10, 7], 2] )                      # 5
+
+    # A side-effecting primitive.  Unlike +, -, *, =, <, the print primitive
+    # reaches outside the evaluator -- and it *returns* its argument, so it
+    # composes inside a larger expression.  Because run() evaluates before it
+    # echoes, the raw 10 (the effect) prints above the >>> line, and 15 (the
+    # returned 10, flowed on into +) is the value.
+    run( ['+', ['print', 10], 5] )                     # prints 10, ==> 15
+
     run( ['set!', 'x', ['*', 6, 7]] )                  # 42
     run( 'x' )                                          # 42
 

@@ -6,7 +6,6 @@ Extends IttyBittyLisp1.py (Part 1) with:
   - Function : a closure that captures its defining environment
   - let   : local variable binding
   - lambda: first-class functions (closures)
-  - quote : suppress evaluation
 
 This is a *recursive* evaluator -- every call in tail position pushes a new
 Python stack frame.  It will overflow Python's ~1000-frame limit for deeply
@@ -60,9 +59,9 @@ class Environment:
 
 class Function:
     def __init__( self, params, body, env ):
-        self.params = params   # list of parameter name strings
-        self.body   = body     # list of body expressions; last is the tail
-        self.env    = env      # lexical environment at definition time
+        self.params: list[str]   = params
+        self.body:   list        = body    # last expression is in tail position
+        self.env:    Environment = env     # captured at definition -- this is what makes it a closure
 
 
 # ---------------------------------------------------------------------------
@@ -72,28 +71,21 @@ class Function:
 def lEval( expr, env ):
 
     # ---- State = EVAL (dispatch on expression syntax) ----
-    if expr in ('#t', '#f'):           # boolean literals self-evaluate (they are
+    if expr in ('#t', '#f'):           # boolean literals evaluate to themselves (they are
         return expr                    # data, not identifiers -- never looked up)
-    elif isinstance(expr, str):        # a symbol -- look it up in the environment
+    elif isinstance(expr, str):        # a symbol
         return env.lookup(expr)
     elif not isinstance(expr, list):   # everything else evaluates to itself
         return expr
-
-    # expr is a non-empty list -- a special form or a procedure call.  (A bare
-    # () is not a valid Scheme expression.)
-
-    # Handle Special operators inline
     elif expr[0] == 'set!':
         name, valExpr = expr[1:]
         val = lEval(valExpr, env)
-        env.set(name, val)
-        return val
+        return env.set(name, val)
 
     elif expr[0] == 'if':
-        condExpr, thenBody, elseBody = expr[1:]
-        conditionVal = lEval(condExpr, env)
-        # Scheme truthiness: every value except #f is true.
-        return lEval(elseBody if conditionVal == '#f' else thenBody, env)
+        condExpr, thenExpr, elseExpr = expr[1:]
+        condVal = lEval(condExpr, env)
+        return lEval(elseExpr if condVal == '#f' else thenExpr, env)
 
     elif expr[0] == 'begin':
         for subExpr in expr[1:-1]:     # non-tail forms: evaluated for effect
@@ -109,11 +101,10 @@ def lEval( expr, env ):
 
     elif expr[0] == 'let':
         bindingPairs, *body = expr[1:]
-        # Eval each init in the OUTER env, then open one new scope holding them all,
-        # passed through the constructor so the bindings stay private to Environment.
-        new_env = Environment( parent=env,
-                               bindings={ name: lEval(initExpr, env)
-                                          for name, initExpr in bindingPairs } )
+        # Each init is evaluated in the OUTER env -- that is what makes this let, not let*.
+        initialBindings = { name: lEval(initExpr, env) for name, initExpr in bindingPairs }
+        new_env = Environment( parent=env, bindings=initialBindings )
+        
         for subExpr in body[:-1]:             # non-tail body forms
             lEval(subExpr, new_env)
         return lEval(body[-1], new_env)       # tail body form
@@ -124,26 +115,34 @@ def lEval( expr, env ):
         # ---- State = APPLY (invoke a procedure on evaluated args) ----
         if callable(fn):                   # primitive implemented in Python
             return fn(args)
-        # user-defined function: evaluate its body in a fresh local scope chained
-        # off the *captured* (lexical) environment, not the caller's.
-        local_env = Environment(parent=fn.env, bindings=dict(zip(fn.params, args)))
-        for subExpr in fn.body[:-1]:       # non-tail body forms
-            lEval(subExpr, local_env)
-        return lEval(fn.body[-1], local_env)   # tail body form
+        else:
+            # user-defined function: evaluate its body in a fresh local scope chained
+            # off the *captured* (lexical) environment, not the caller's.
+            initialBindings = dict(zip(fn.params, args))
+            new_env = Environment(parent=fn.env, bindings=initialBindings)
+            
+            for subExpr in fn.body[:-1]:       # non-tail body forms
+                lEval(subExpr, new_env)
+            return lEval(fn.body[-1], new_env)   # tail body form
 
 
 # ---------------------------------------------------------------------------
 # Primitives and global environment
 # ---------------------------------------------------------------------------
 
-global_env = Environment( bindings={
+def lisp_print( args ):
+    print( args[0] )
+    return args[0]       # returned, so print composes inside a larger expression
+
+globalBindings = {
     '+':     lambda args: args[0] + args[1],
     '-':     lambda args: args[0] - args[1],
     '*':     lambda args: args[0] * args[1],
     '=':     lambda args: '#t' if args[0] == args[1] else '#f',
     '<':     lambda args: '#t' if args[0] <  args[1] else '#f',
-    'print': lambda args: (print( args[0] ), args[0])[1],
-} )
+    'print': lisp_print,
+}
+global_env = Environment( bindings=globalBindings )
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +163,21 @@ def lisp_str( val ):
 
 def run( expr ):
     result = lEval( expr, global_env )
-    print( f'>>> {lisp_str( expr )}' )    # the expression, in Lisp syntax
-    print( f'==> {lisp_str( result )}' )  # its value, in Lisp syntax
+    print( f'>>> {lisp_str( expr )}' )
+    print( f'==> {lisp_str( result )}' )
     print()
 
 
 def main():
     # Basic arithmetic (same as Part 1)
     run( ['+', ['-', 10, 7], 2] )
+
+    # A side-effecting primitive.  Unlike +, -, *, =, <, the print primitive
+    # reaches outside the evaluator -- and it *returns* its argument, so it
+    # composes inside a larger expression.  Because run() evaluates before it
+    # echoes, the raw 10 (the effect) prints above the >>> line, and 15 (the
+    # returned 10, flowed on into +) is the value.
+    run( ['+', ['print', 10], 5] )
 
     # set! and variable lookup
     run( ['set!', 'x', ['*', 6, 7]] )

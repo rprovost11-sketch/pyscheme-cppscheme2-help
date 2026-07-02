@@ -23,8 +23,9 @@ The recursive evaluator from `EVALUATOR1-DOC` handles `if` like this:
 
 ```python
 elif expr[0] == 'if':
-    cond = lEval( expr[1], env )
-    return lEval( expr[2] if cond != '#f' else expr[3], env )   # recursive call
+    condExpr, thenExpr, elseExpr = expr[1:]
+    condVal = lEval(condExpr, env)
+    return lEval(elseExpr if condVal == '#f' else thenExpr, env)   # recursive call
 ```
 
 A tail-recursive Lisp countdown:
@@ -62,8 +63,9 @@ def lEval( expr, env ):
     while True:
         ...
         elif C[0] == 'if':
-            cond = lEval( C[1], E )   # condition: NOT tail - recurse
-            C = C[2] if cond != '#f' else C[3]   # every value except #f is true
+            condExpr, thenExpr, elseExpr = C[1:]
+            condVal = lEval(condExpr, E)   # condition: NOT tail - recurse
+            C = elseExpr if condVal == '#f' else thenExpr   # every value except #f is true
             continue                   # tail branch: loop, no new frame
 ```
 
@@ -101,10 +103,10 @@ scope, sets C to the body's tail form, and loops.
 
 ```python
 # Bind arguments in a new scope on the *captured* environment, then loop.
-new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
-E = new_env
-for sub in fn.body[:-1]:
-    lEval( sub, E )        # non-tail body forms: recurse normally
+initialBindings = dict(zip(fn.params, args))
+E = Environment( parent=fn.env, bindings=initialBindings )
+for subExpr in fn.body[:-1]:
+    lEval(subExpr, E)        # non-tail body forms: recurse normally
 C = fn.body[-1]
 continue                   # tail call: loop - no stack growth
 ```
@@ -116,80 +118,79 @@ how deeply the Lisp recursion goes.
 
 ```python
 def lEval( expr, env ):
-    # C and E are machine registers.  A tail position overwrites them and
-    # loops (TCO) instead of recursing -- no new Python frame is pushed.
+    # C and E are machine registers.  A tail position overwrites them and loops
+    # (TCO) instead of recursing -- no new Python frame is pushed.
     C = expr   # Control:     the expression currently being evaluated
     E = env    # Environment: the bindings in scope
     while True:
-
-        # --- Atoms ---
-
-        if C in ( '#t', '#f' ):            # boolean literals self-evaluate (not identifiers)
-            return C
-        elif isinstance( C, str ):         # symbol - variable lookup
-            return E.lookup( C )
-        elif not isinstance( C, list ):    # number, etc. - self-evaluate
+        # ---- State = EVAL (dispatch on expression syntax) ----
+        if C in ('#t', '#f'):         # boolean literals self-evaluate (they are
+            return C                   # data, not identifiers -- never looked up)
+        elif isinstance(C, str):      # a symbol -- look it up in the environment
+            return E.lookup(C)
+        elif not isinstance(C, list): # everything else evaluates to itself
             return C
 
-        # C is a non-empty list -- a special form or procedure call.  (A bare ()
-        # is not a valid Scheme expression.)  Each special form is one more arm of
-        # this single dispatch chain; the final else handles procedure calls.
-        #
-        # --- Special forms ---
-        # Tail positions reassign C/E and `continue` - no new Python frame.
-        # Non-tail positions call lEval() recursively, riding the Python call
-        # stack (which here still plays the role of the continuation K).
+        # C is a non-empty list -- a special form or a procedure call.  (A bare
+        # () is not a valid Scheme expression.)
+
+        # Handle Special operators inline.  Tail positions reassign C/E and
+        # `continue`; non-tail positions recurse (riding the Python stack as K).
+        elif C[0] == 'set!':
+            name, valExpr = C[1:]
+            val = lEval(valExpr, E)             # rvalue: not tail, recurse
+            return E.set(name, val)
 
         elif C[0] == 'if':
-            cond = lEval( C[1], E )          # condition: not tail, recurse
-            C = C[2] if cond != '#f' else C[3]  # every value except #f is true
-            continue                          # tail branch: loop
+            condExpr, thenExpr, elseExpr = C[1:]
+            condVal = lEval(condExpr, E)   # condition: not tail, recurse
+            C = elseExpr if condVal == '#f' else thenExpr
+            continue                            # tail branch: loop
 
         elif C[0] == 'begin':
-            for sub in C[1:-1]:
-                lEval( sub, E )               # non-tail forms: recurse
+            for subExpr in C[1:-1]:             # non-tail forms: recurse
+                lEval(subExpr, E)
             C = C[-1]
-            continue                          # tail: last form
-
-        elif C[0] == 'let':
-            vardefs = C[1]                    # list of [name, init-expr] pairs
-            body    = C[2:]
-            # Eval every init in the OUTER E (parallel let, not let*), then open
-            # one new scope holding them all.
-            E = Environment( parent=E,
-                     bindings={ name: lEval( init, E ) for name, init in vardefs } )
-            for sub in body[:-1]:
-                lEval( sub, E )               # non-tail body forms: recurse
-            C = body[-1]
-            continue                          # tail: last body form
-
-        elif C[0] == 'set!':
-            val = lEval( C[2], E )
-            E.set( C[1], val )
-            return val
+            continue                            # tail: last form
 
         elif C[0] == 'lambda':
-            return Function( C[1], C[2:], E )
+            params, *body = C[1:]
+            return Function(params, body, E)
 
         elif C[0] == 'quote':
             return C[1]
 
-        # --- Function call ---
-        # All sub-expressions (operator + arguments) are non-tail.
-        else:
-            fn, *args = [lEval( subexpr, E ) for subexpr in C]
-            if callable( fn ):                   # Python primitive: return directly
-                return fn( args )
+        elif C[0] == 'let':
+            bindingPairs, *body = C[1:]
 
-            # User-defined function: TCO - reassign the registers and loop.
-            # The new scope is opened on the *captured* (lexical) environment,
-            # not the caller's environment.  This is what makes closures work.
-            new_env = Environment( parent=fn.env, bindings=dict( zip( fn.params, args ) ) )
-            E = new_env
-            for sub in fn.body[:-1]:
-                lEval( sub, E )                  # non-tail body forms: recurse
-            C = fn.body[-1]
-            continue                             # tail call: loop, no stack growth
+            # Eval every init expr in the OUTER env E (parallel `let`, not `let*`),
+            # then open a new scope that holds them all.
+            initialBindings = { name: lEval(initExpr, E) for name, initExpr in bindingPairs }
+            E = Environment( parent=E, bindings=initialBindings )
+
+            # Execute body in the new E
+            for subExpr in body[:-1]:            # non-tail body forms: recurse
+                lEval(subExpr, E)
+            C = body[-1]
+            continue                            # tail: last body form
+
+        else:
+            fn, *args = [ lEval(elt, E) for elt in C ]   # eval operator + operands
+
+            # ---- State = APPLY (invoke a procedure on evaluated args) ----
+            if callable(fn):                        # primitive implemented in Python
+                return fn(args)
+            else:
+                # user-defined function: TCO -- reassign the registers and loop.  The new
+                # scope is opened on the *captured* (lexical) env, not the caller's.
+                initialBindings = dict(zip(fn.params, args))
+                E = Environment( parent=fn.env, bindings=initialBindings )
+
+                # Execute the body in the new E
+                for subExpr in fn.body[:-1]:            # non-tail body forms: recurse
+                    lEval(subExpr, E)
+                C = fn.body[-1]
+                continue                                # tail call: loop, no stack growth
 ```
 
 ## Challenges
