@@ -20,7 +20,6 @@ evaluated, not *how* the stack is used.
 Run with: python IttyBittyLisp2.py
 """
 
-
 # ---------------------------------------------------------------------------
 # Environment: a linked chain of scopes
 # ---------------------------------------------------------------------------
@@ -51,7 +50,6 @@ class Environment:
         # handle goes straight there, with no second walk down the chain.
         self._global._bindings[name] = value
         return value
-
 
 # ---------------------------------------------------------------------------
 # Function: a closure capturing its lexical environment
@@ -92,12 +90,12 @@ def lEval( expr, env ):
             lEval(subExpr, env)
         return lEval(expr[-1], env)    # tail form: its value is the result
 
+    elif expr[0] == 'quote':
+        return expr[1]
+
     elif expr[0] == 'lambda':
         params, *body = expr[1:]
         return Function(params, body, env)
-
-    elif expr[0] == 'quote':
-        return expr[1]
 
     elif expr[0] == 'let':
         bindingPairs, *body = expr[1:]

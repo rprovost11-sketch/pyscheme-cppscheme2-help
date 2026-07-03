@@ -107,12 +107,12 @@ def lEval( expr, env ):
             C = C[-1]
             continue                            # tail: last form
 
+        elif C[0] == 'quote':
+            return C[1]
+
         elif C[0] == 'lambda':
             params, *body = C[1:]
             return Function(params, body, E)
-
-        elif C[0] == 'quote':
-            return C[1]
 
         elif C[0] == 'let':
             bindingPairs, *body = C[1:]
