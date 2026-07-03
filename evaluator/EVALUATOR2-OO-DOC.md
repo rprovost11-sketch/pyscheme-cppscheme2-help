@@ -1,12 +1,33 @@
-# What Else Is Hiding in a Closure?
+# Your Closures Are Already Objects
 
-### *Objectively Surprising Closures*
+### *Object-orientation, already present in the Part 2 closure*
 
 *Branches off `EVALUATOR2-DOC`. This is an optional side road you can take from
-Part 2 and return from - nothing in it depends on Parts 3-6, and nothing in it
+Part 2 and return from - nothing in Parts 3-6 depends on it, and nothing in it
 extends the evaluator. It assumes only that you have read Part 2, in particular
 the section "Closures from the programmer's seat," whose `make-counter` we pick
 up below.*
+
+Every core idea in object-oriented programming - an object that bundles private
+state with the operations on it, encapsulation, message dispatch, polymorphism,
+even inheritance - is *already present* in the closure you built in Part 2.  Not
+"can be bolted on."  Already there.  This chapter adds nothing to the evaluator
+and asks nothing of the language that Part 2 does not already provide.  All it
+does is build one ordinary object out of a `lambda` that returns a `lambda`, and
+then set the vocabulary of object-orientation beside the parts of that closure -
+at which point you find the two are the same list.
+
+So the surprise here is not *what* we are building; that is announced, and you
+should read knowing the destination.  The surprise is *how little it takes to get
+there* - that the objects turn out to have been free, riding on the two
+subexpressions Part 2 already spent on plain lexical scope, in the smallest and
+first interpreter of the series.  So read with one question held live: **where is
+the object machinery?**  We will reach the end and find there was none.
+
+We build in four moves - an object with private state (`make-account`), the
+encapsulation that seals it, polymorphism across two kinds of account that share
+a message set, and inheritance by one object delegating to another - and then
+stop and account for what it cost.
 
 ## Recall the counter
 
@@ -24,15 +45,18 @@ Part 2 left you with this closure:
 ```
 
 `c1` is a function carrying private, persistent state that you can reach only by
-calling it.  Hold that shape in mind - a function with a memory of its own.  We
-are going to build a bigger one, and then stop and ask what we have made.
+calling it.  Hold that shape in mind - a function with a memory of its own.  It is
+already half of an object: the private, persistent state.  What it lacks is a way
+to offer *more than one* operation on that state.  We add exactly that, and get
+the whole thing.
 
-## A strange expression
+## Build an object: an account
 
-Here is a lambda that returns a lambda.  Read it, but don't reach for what it
-*means* yet - just notice its shape: an outer function that takes a `balance`,
-and an inner function that takes a `msg` and an `amount` and branches on the
-message.
+An object, built as a closure, is an outer function that takes the object's
+initial fields and returns an inner function that takes a *message* and acts on
+it.  Here is one.  `make-account` closes over a `balance` and returns a procedure
+that branches on a `msg` - `deposit`, `withdraw`, or `balance` - deciding for
+itself what each one does:
 
 ```scheme
 (set! make-account
@@ -54,12 +78,12 @@ procedure and, still, nothing much:
 (set! acct (make-account 100))   ; ==> #<procedure (msg amount)>
 ```
 
-`acct` is just another closure, like `c1`.  It has captured a `balance` of 100,
-and that is all we can say so far.  It does not *do* anything on its own.
+`acct` is an object holding a private `balance` of 100.  So far it has *done*
+nothing, because an object acts only when it is sent a message.
 
-## Watch what it lets you do
+## Send it messages
 
-Now feed it those odd `msg`/`amount` pairs, one at a time:
+Send it a `msg` and an `amount`, one at a time:
 
 ```scheme
 (acct 'deposit  50)   ; ==> 150
@@ -68,10 +92,10 @@ Now feed it those odd `msg`/`amount` pairs, one at a time:
 ```
 
 Three calls, three different behaviors, chosen by the first argument.  The
-`balance` climbs and falls and *persists* between calls - it is the same
-captured `balance`, living on in `acct`'s closed-over scope.  Try to read it from
-outside and you cannot: there is no expression in the language that reaches
-`balance` except by calling `acct` with a message it chooses to answer.
+`balance` climbs and falls and *persists* between calls - it is the same captured
+`balance`, living on in `acct`'s closed-over scope.  Try to read it from outside
+and you cannot: there is no expression in the language that reaches `balance`
+except by calling `acct` with a message it chooses to answer.
 
 And a second one keeps its own books entirely, untouched by the first:
 
@@ -81,9 +105,9 @@ And a second one keeps its own books entirely, untouched by the first:
 (acct  'balance    0)   ; ==> 120   -- acct is unaffected
 ```
 
-## What did you just build?
+## Name the parts
 
-Stop and take inventory of `acct`:
+Take inventory of `acct`:
 
 - it holds **private state** (`balance`) that **persists** across calls,
 - it responds to a fixed set of **named operations** (`deposit`, `withdraw`, `balance`),
@@ -91,9 +115,9 @@ Stop and take inventory of `acct`:
 - and each one you make is **independent** of the rest.
 
 Private state, a public set of named operations, the state sealed behind them,
-many independent instances.  You have built an **object** - and you did it with
-nothing but a `lambda` that returns a `lambda`.  Line up the vocabulary of
-object-orientation against the parts of the closure you just wrote and, in this
+many independent instances: that is an **object**, and - as promised - you built
+it with nothing but a `lambda` that returns a `lambda`.  Set the vocabulary of
+object-orientation beside the parts of the closure you just wrote and, in this
 language, the two lists are the same list:
 
 | Object-oriented idea | ...is, here |
@@ -106,7 +130,8 @@ language, the two lists are the same list:
 | encapsulation | lexical scope - the fields are unreachable except through the body |
 
 None of those rows asked anything of the evaluator that Part 2 does not already
-provide.  Every row is a *use* of closures, not an extension of them.
+provide.  Every row is a *use* of closures, not an extension of them.  (Keep the
+question in view: still no object machinery in sight.)
 
 ## Encapsulation, and why it is stronger than it looks
 
@@ -184,10 +209,11 @@ inheritance is "pass it up."  Both are ordinary closure calls.
 
 ## The double surprise
 
-Re-open `IttyBittyLisp2.py` and look for the machinery that made any of that
-possible.  There is none.  The whole of it - fields, methods, dispatch,
-encapsulation, polymorphism, inheritance - rode on two subexpressions that were
-already there to make plain variables and functions work:
+Now collect on the question you have been holding.  Re-open `IttyBittyLisp2.py`
+and look for the machinery that made any of that possible.  There is none.  The
+whole of it - fields, methods, dispatch, encapsulation, polymorphism,
+inheritance - rode on two subexpressions that were already there to make plain
+variables and functions work:
 
 ```python
 elif expr[0] == 'lambda':
