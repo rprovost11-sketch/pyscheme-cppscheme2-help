@@ -60,7 +60,6 @@ class Environment:
         self._global._bindings[name] = value
         return value
 
-
 # ---------------------------------------------------------------------------
 # Function: a closure capturing its lexical environment
 # ---------------------------------------------------------------------------
@@ -146,7 +145,6 @@ def lEval( expr, env ):
                 C = fn.body[-1]
                 continue                                # tail call: loop, no stack growth
 
-
 # ---------------------------------------------------------------------------
 # Primitives and global environment
 # ---------------------------------------------------------------------------
@@ -155,10 +153,16 @@ def lisp_print( args ):
     print( args[0] )
     return args[0]       # returned, so print composes inside a larger expression
 
+def lisp_mul( args ):    # variadic product; (*) is 1, the multiplicative identity
+    result = 1
+    for x in args:
+        result *= x
+    return result
+
 globalBindings = {
-    '+':     lambda args: args[0] + args[1],
+    '+':     lambda args: sum( args ),                          # variadic; (+) is 0
     '-':     lambda args: args[0] - args[1],
-    '*':     lambda args: args[0] * args[1],
+    '*':     lisp_mul,                                          # variadic; (*) is 1
     '=':     lambda args: '#t' if args[0] == args[1] else '#f',
     '<':     lambda args: '#t' if args[0] <  args[1] else '#f',
     'print': lisp_print,

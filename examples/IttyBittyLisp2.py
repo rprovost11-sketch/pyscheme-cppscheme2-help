@@ -61,7 +61,6 @@ class Function:
         self.body:   list        = body    # last expression is in tail position
         self.env:    Environment = env     # captured at definition -- this is what makes it a closure
 
-
 # ---------------------------------------------------------------------------
 # The recursive evaluator
 # ---------------------------------------------------------------------------
@@ -123,7 +122,6 @@ def lEval( expr, env ):
                 lEval(subExpr, new_env)
             return lEval(fn.body[-1], new_env)   # tail body form
 
-
 # ---------------------------------------------------------------------------
 # Primitives and global environment
 # ---------------------------------------------------------------------------
@@ -132,10 +130,16 @@ def lisp_print( args ):
     print( args[0] )
     return args[0]       # returned, so print composes inside a larger expression
 
+def lisp_mul( args ):    # variadic product; (*) is 1, the multiplicative identity
+    result = 1
+    for x in args:
+        result *= x
+    return result
+
 globalBindings = {
-    '+':     lambda args: args[0] + args[1],
+    '+':     lambda args: sum( args ),                          # variadic; (+) is 0
     '-':     lambda args: args[0] - args[1],
-    '*':     lambda args: args[0] * args[1],
+    '*':     lisp_mul,                                          # variadic; (*) is 1
     '=':     lambda args: '#t' if args[0] == args[1] else '#f',
     '<':     lambda args: '#t' if args[0] <  args[1] else '#f',
     'print': lisp_print,
