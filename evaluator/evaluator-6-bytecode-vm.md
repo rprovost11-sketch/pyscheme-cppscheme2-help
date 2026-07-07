@@ -1,8 +1,8 @@
 # Chapter 6: The Bytecode VM
 
-Chapters 4 and 5 built the CEK machine and scaled it to the whole language.  It has
-a property worth staring at: every time around its loop, before it can do anything,
-it asks *what kind of expression is this?* (is `C` a number, a variable, a
+Chapters 4 and 5 built the CEK machine and scaled it to the whole language.  Look
+closely at what it does every time around its loop: before it can do anything, it
+asks *what kind of expression is this?* (is `C` a number, a variable, a
 `lambda`, an `if`, an application?) and picks the matching transition.  It asks
 that question afresh on every single step.
 
@@ -98,7 +98,7 @@ the `FRAME_IF` pair from §4.3.  `APP_START` / `APPLY_ARG` / `CALL` is the
 function-call sequence from §4.5.  The opcodes are not a new machine: they are the
 old machine's moves, given names so they can be written down.
 
-One detail is worth noticing, because it is the theme of the whole chapter.
+One detail here is the theme of the whole chapter.
 Wherever the CEK machine stored an *expression*, the compiled version stores a
 *position* instead.  `FRAME_IF` in Chapter 4 held the two branch *expressions*; here
 it holds their two *addresses* in the bytecode (`then`, `else` are instruction
@@ -394,23 +394,62 @@ because the whole program is in tail position, the call is `TCALL` (7).  The two
 addresses inside `LAM` and `JUMP` are exactly what backpatching filled in: the body
 sits at 3, and the code past it is at 5.
 
-Now run it.  Here is the VM stepping through, one instruction per line, `#<x>` is the
-closure `LAM` builds, and `{x:7}` the scope `TCALL` opens:
+Now run it.  Here is the VM stepping through, one step per block; `#<x>` is the
+closure `LAM` builds and `{x:7}` the scope `TCALL` opens.  Each step shows the
+program counter `pc` (with the instruction it points at), the stack `K`, and the
+value `V`, and on the `>` line what the step does:
 
 ```
- step  pc  instr        K (bottom .. top)     V       what happens
- ----  --  -----------  --------------------  ------  -------------------------------------
-   1    0  APP_START    []                     –      K.push(FRAME_ARG, top);  pc -> 1
-   2    1  LAM x 3       [ARG]                  –      V := #<x> (body at pc 3);  pc -> 2
-   3    2  JUMP 5        [ARG]                  #<x>   pc -> 5  (skip the inline body)
-   4    5  APPLY_ARG     [ARG]                  #<x>   restore E; K.push(FRAME_CALL #<x>);  pc -> 6
-   5    6  INT 7         [CALL #<x>]            #<x>   V := 7;  pc -> 7
-   6    7  TCALL         [CALL #<x>]            7      pop closure; E := {x:7}; pc -> 3  (no return frame)
-   7    3  VAR x         []                     7      V := lookup(x) = 7;  pc -> 4
-   8    4  RET           []                     7      K empty -> return 7
+step 1
+   pc  0  APP_START
+   K   []
+   V   –
+   >   push (FRAME_ARG, E) to remember the scope; pc -> 1
+
+step 2
+   pc  1  LAM x 3
+   K   [ARG]
+   V   –
+   >   V := closure #<x> (its body starts at pc 3); pc -> 2
+
+step 3
+   pc  2  JUMP 5
+   K   [ARG]
+   V   #<x>
+   >   jump past the inline body: pc -> 5
+
+step 4
+   pc  5  APPLY_ARG
+   K   [ARG]
+   V   #<x>
+   >   pop ARG (restore E); push (FRAME_CALL, V=#<x>); pc -> 6
+
+step 5
+   pc  6  INT 7
+   K   [CALL #<x>]
+   V   #<x>
+   >   V := 7 (the instruction's constant); pc -> 7
+
+step 6
+   pc  7  TCALL
+   K   [CALL #<x>]
+   V   7
+   >   pop closure #<x>; bind x:=V=7; pc -> 3 (tail: no return frame)
+
+step 7
+   pc  3  VAR x
+   K   []
+   V   7
+   >   V := lookup(x) in E = 7; pc -> 4
+
+step 8
+   pc  4  RET
+   K   []
+   V   7
+   >   K empty, so return V = 7
 ```
 
-Two things to see.  Follow the `pc` column: it is no longer a walk over a tree but a
+Two things to see.  Follow the `pc` line: it is no longer a walk over a tree but a
 path through a list, mostly `+1`, with three jumps (the `JUMP` at step 3, the `TCALL`
 into the body at step 6, and the final `RET`).  And follow `K`: it never holds a
 `FRAME_RET`, because the only call in the program is a *tail* call, so no return
@@ -445,8 +484,8 @@ that Chapter 4 did, identical answers, a different machine underneath:
 ==> 3
 ```
 
-That is the last of the six machines, and it is worth looking back down the whole
-staircase, because the same tiny language ran on every step:
+That is the last of the six machines.  Look back down the whole staircase now,
+because the same tiny language ran on every step:
 
 1. **The naive evaluator** (Ch 1): `lEval` walks the AST by recursion; the Python
    call stack *is* the interpreter's memory, and deep programs overflow it.

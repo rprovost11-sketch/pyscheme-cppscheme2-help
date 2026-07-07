@@ -1,25 +1,26 @@
 # Chapter 4: The Continuation Becomes a Register
 
-Chapter 3 left one honest gap.  The looping evaluator gave *tail* calls a home in
-constant space, but non-tail sub-expressions still recurse (they still call
-`lEval` and wait for the answer to come back) and each of those waits sits on
-Python's stack.  We said what that stack is quietly holding for us: for every
-unfinished sub-expression, *what to do with its value once it comes back*.  That
-pending "what-to-do-next" is the **continuation**, and right now it lives on
-Python's call stack where we can neither see it nor control it.
+Chapter 3 left something unfinished.  The looping evaluator put *tail* calls into
+constant space, but non-tail sub-expressions still recurse: they call `lEval` and
+wait for the answer, and each of those waits sits on Python's stack.  We even said
+what the stack is holding while it waits.  For every unfinished sub-expression, it
+holds *what to do with the value once it comes back*.  That pending "what to do
+next" has a name, the **continuation**, and so far it has lived on Python's stack,
+where we cannot see it or touch it.
 
-This chapter takes it away from Python and puts it in a register the machine owns
-outright, a third register alongside `C` and `E`.  When we are done, the
-evaluator will never call itself, not even for a non-tail sub-expression: *all* of
-its pending work, tail and non-tail alike, will live in that register, on the
-heap, where nothing Python does can overflow it.
+This chapter moves it.  We take the continuation off Python's stack and give it a
+register of our own, a third one alongside `C` and `E`.  Once it lives there, the
+evaluator never calls itself again, not even for a non-tail sub-expression.  All of
+its pending work, tail and non-tail alike, sits in that register on the heap, and
+nothing Python does can overflow it.
 
-That is a real change to the shape of the machine, and it is the one genuinely
-hard step in this series.  So we take it slowly, and we take it on the smallest
-language we can: small enough that the machine is the only new thing in the room.
-The full language comes back in Chapter 5, running on this very machine; the deep
-`factorial` that overflowed at the end of Chapter 3 will run there in flat space.
-This chapter is about building the machine itself.
+This is the biggest change of shape the machine goes through, and probably the
+hardest idea in the whole series, so we will take it slowly.  We will also take it
+on the smallest language we can manage, small enough that the new machinery is the
+only unfamiliar thing on the page.  The full language comes back in Chapter 5,
+running on this same machine, and the deep `factorial` that overflowed at the end
+of Chapter 3 will run there in flat space.  For now, all we are doing is building
+the machine.
 
 
 ## 4.1 The language shrinks, and why
@@ -62,55 +63,55 @@ of several expressions:
   can use.
 
 You might reasonably wonder whether a language this bare (no arithmetic, no data,
-nothing but one-argument functions and a test) can compute anything worth
-computing.  It can, and that is one of the quiet surprises at the foundation of
-computing: functions and `if` are already enough to express *any* computation at
-all.  Numbers, arithmetic, loops, data structures (everything the full language
-hands back in Chapter 5) can be rebuilt from nothing but functions, given enough
-ingenuity.  You have met the trick in miniature already: Chapter 2 conjured a
-stateful counter out of a bare closure, and the curried functions above recovered
-two arguments from one; the same kind of construction, pushed far enough, reaches an
-entire language.  (This minimal core is older than the electronic computer and has a
-name, the **lambda calculus**, whose central result is exactly this: that functions
-alone are universal.)  So the smallness takes nothing away from what the language can
-compute; it is a free choice, which leaves the question of why we make it.
+nothing but one-argument functions and a test) can compute anything at all.  It
+can, and this is one of the real surprises at the foundation of computing:
+functions and `if` are already enough to express *any* computation.  Numbers,
+arithmetic, loops, data structures, everything the full language hands back in
+Chapter 5, can be rebuilt from functions alone, given enough patience.  You have
+already seen the trick in miniature.  Chapter 2 built a working counter out of
+nothing but a closure, and the curried functions above pulled two arguments out of
+one.  The same kind of construction, pushed far enough, gets you a whole language.
+(This minimal core predates the electronic computer and has a name, the **lambda
+calculus**, and its central result is exactly this claim: that functions alone are
+universal.)  So shrinking the language costs us nothing in what it can compute.  It
+is a free choice, which leaves only the question of why we make it.
 
-Why shrink so far?  Because the machine we are about to build treats every kind of
-sub-expression the same way ("evaluate this later, and here is what to do with its
-value") and each *kind* of sub-expression needs its own little note describing
-that "what to do."  A language with ten forms needs ten kinds of note; a language
-with three needs three.  We want you watching the *mechanism*, not bookkeeping ten
-near-identical cases, so we cut the language to the fewest forms that still have
-everything interesting: functions, so there is something to call; `if`, so there
-is a choice to make; and a notion of truth, so `if` has something to test.  That
-is the smallest world in which the new machine still does something worth watching.
+Why shrink so far?  Because the machine we are about to build treats every
+sub-expression the same way, "evaluate this later, and here is what to do with its
+value," and each kind of sub-expression needs its own little note spelling out that
+"what to do."  Ten forms would mean ten kinds of note; three forms mean three.  We
+would rather you watched the mechanism than kept track of ten near-identical cases,
+so we keep only the forms that still make something happen: functions, so there is
+something to call; `if`, so there is a choice to make; and a notion of truth, so
+`if` has something to test.  That is the smallest world the machine can do anything
+interesting in.
 
-Everything you learn here scales straight back up.  Adding `let`, `begin`,
-primitives, and the rest to this machine adds *more kinds of note* and nothing
-else: no change to the machine's shape.  That is exactly the work of Chapter 5.
+Everything you learn here scales straight back up.  Adding `let`, `begin`, the
+primitives, and the rest means adding *more kinds of note*, and nothing else; the
+machine's shape never changes.  That is all Chapter 5 does.
 
 
 ## 4.2 The continuation, made of data
 
-You met the **continuation** at the end of Chapter 3 (§3.4): for every unfinished
-sub-expression, the continuation is everything the program still has left to do once
-that sub-expression produces a value: choose a branch with it, multiply it by `n`,
-make it the next argument.  Every non-tail sub-expression has one, and in Chapters
-1–3 it was never something you could point at.  It was *implied* by where the
-evaluator happened to be in its own recursion, living on Python's stack instead of
-in ours.
+You met the **continuation** at the end of Chapter 3 (§3.4).  For any unfinished
+sub-expression, the continuation is everything the program still has to do once that
+sub-expression produces a value: choose a branch with it, or multiply it by `n`, or
+pass it on as the next argument.  Every non-tail sub-expression has one.  In
+Chapters 1 through 3 it was never something you could point at, only something
+*implied* by where the evaluator happened to be in its own recursion, living on
+Python's stack rather than in ours.
 
-This chapter's one move is to make the continuation **data**.  We **reify** it.  To
-*reify* something is to take an idea that is implicit (genuinely present and doing
-work, but with no handle on it) and turn it into a concrete piece of data your
-program can hold, inspect, and pass around.  Each pending "what-to-do-next" becomes
-a small tuple, a **continuation frame**, and we keep a list of those frames in a
-register of our own.  The list *is* the continuation, made of data instead of made
-of Python's paused function calls.
+This chapter's one move is to turn the continuation into **data**.  The technical
+word for that is **reify**: to take something implicit, real and doing work but with
+no handle on it, and make it a concrete piece of data the program can hold on to and
+pass around.  Each pending "what to do next" becomes a small tuple, a **continuation
+frame**, and we keep a list of those frames in a register of our own.  That list
+*is* the continuation, built out of data instead of out of Python's paused function
+calls.
 
-Once the continuation is data, the recursion that used to hold it is unnecessary.
-That is the whole idea of the chapter.  The rest is watching it happen, one form at
-a time.
+Once the continuation is data, we no longer need the recursion that used to carry
+it.  That is the entire idea.  Everything else in the chapter is working it out one
+form at a time.
 
 
 ## 4.3 One recursion becomes a stack
@@ -154,8 +155,9 @@ elif C[0] == 'if':
     C = C[1]                                # ...and loop to evaluate the condition
 ```
 
-No recursion, no waiting.  We pushed the pending work onto `K` and pointed `C` at
-the condition, and the loop goes round again.
+That is the whole move.  There is no recursive call and nothing left waiting on
+Python's stack; we pushed the pending work onto `K`, pointed `C` at the condition,
+and the loop comes round again.
 
 Step 3 needs somewhere for the value to *land* when a sub-expression finally
 produces one, and it needs to happen when `C` reaches a leaf: a number or a
@@ -183,16 +185,40 @@ if frame[0] == FRAME_IF:                 # (FRAME_IF, thenExpr, elseExpr, env)
 ```
 
 Put those three fragments in one loop and you have a complete little machine, for
-a language of just numbers, variables, and `if`.  Walk `(if 0 100 200)` through it:
+a language of just numbers, variables, and `if`.  Walk `(if 0 100 200)` through it.
+Each step shows the three registers `C`, `K`, and `V`, and on the line marked `>`,
+what the machine does next and where the value it uses comes from:
 
 ```
- step   C  (or action)            K (stack of notes)          V     what happens
- ----   ---------------------     ------------------------    ---   --------------------------
-   1    (if 0 100 200)            []                           –    push note, C := 0
-   2    0                         [(FRAME_IF, 100, 200, E)]    –    leaf: V := 0
-   3    (consult K)               [(FRAME_IF, 100, 200, E)]    0    pop note: 0 is false, C := 200
-   4    200                       []                           0    leaf: V := 200
-   5    (consult K)               []                          200   K empty -> return 200
+step 1
+   C  (if 0 100 200)
+   K  []
+   V  –
+   >  if: save the branches in FRAME_IF, evaluate the test, C := 0
+
+step 2
+   C  0
+   K  [(FRAME_IF, 100, 200, E)]
+   V  –
+   >  leaf: a number is its own value, so V := C = 0
+
+step 3
+   C  (consult K)
+   K  [(FRAME_IF, 100, 200, E)]
+   V  0
+   >  pop FRAME_IF: V is 0, which is false, so C := else = 200
+
+step 4
+   C  200
+   K  []
+   V  0
+   >  leaf: a number is its own value, so V := C = 200
+
+step 5
+   C  (consult K)
+   K  []
+   V  200
+   >  K is empty, so V (200) is the final answer
 ```
 
 The note that used to be "the Python line waiting below the recursive call" is now
@@ -201,9 +227,9 @@ a tuple sitting on `K`.  When the condition's value arrived in `V`, we did not
 waiting work on `K` and did it.  That is the continuation, reified: a value on the
 heap instead of a paused function on Python's stack.
 
-We built this for one form, `if`.  Functions need two more notes, and we add them
-in §4.5.  But the machine's whole shape is already here, and it is worth naming
-before we go on.
+We built this for one form, `if`.  Functions need two more notes, which we add in
+§4.5.  But the machine's whole shape is already here, and giving it a name now will
+make the rest of the chapter easier to follow.
 
 
 ## 4.4 The two states: EVAL and APPLY
@@ -315,26 +341,58 @@ elif ftag == FRAME_CALL:             # (FRAME_CALL, closure); V is the argument 
     C = body                             # loop to evaluate the body
 ```
 
-And here is the quiet, important thing: **making a call pushes no note.**  `FRAME_IF`
-and `FRAME_ARG` and `FRAME_CALL` all get pushed while we descend into a
-sub-expression whose value we still need, but the body of a called function is not
-a sub-expression whose value we need *and then do more with*; its value *is* the
-value of the call.  So we install the body directly into `C` with nothing pushed.
-We will come back to why that one omission is the whole of tail-call optimization,
-in §4.8.
+**Making a call pushes no note.**  The three frames all get pushed for the same
+reason: we are about to evaluate something whose value we will need afterward, so we
+write down what "afterward" is.  A called function's body is the exception.  Its
+value is not handed on to some further step; it *is* the call's answer.  Nothing
+waits on it, so there is nothing to record.  We point `C` at the body and push
+nothing.  That missing push is the whole of tail-call optimization, and §4.8 is
+about why.
 
 Walk `((lambda x x) 7)`, the identity function applied to `7`, through it:
 
 ```
- step   C  (or action)         K (stack of notes)              V         what happens
- ----   -------------------    ----------------------------    -------    --------------------------
-   1    ((lambda x x) 7)       []                               –        call: push FRAME_ARG, C := (lambda x x)
-   2    (lambda x x)           [(ARG, 7, top)]                  –        lambda leaf: V := #<x>
-   3    (consult K)            [(ARG, 7, top)]                  #<x>     pop ARG: push FRAME_CALL, C := 7
-   4    7                      [(CALL, #<x>)]                   #<x>     leaf: V := 7
-   5    (consult K)            [(CALL, #<x>)]                   7        pop CALL: bind x:=7, C := x (body)
-   6    x                      []                               7        leaf: V := lookup(x) = 7
-   7    (consult K)            []                               7        K empty -> return 7
+step 1
+   C  ((lambda x x) 7)
+   K  []
+   V  –
+   >  call: save arg 7 in FRAME_ARG, evaluate the function first
+
+step 2
+   C  (lambda x x)
+   K  [(ARG, 7, top)]
+   V  –
+   >  lambda is a leaf: its value is the closure #<x>, so V := #<x>
+
+step 3
+   C  (consult K)
+   K  [(ARG, 7, top)]
+   V  #<x>
+   >  pop ARG: V is the function #<x>; save it in FRAME_CALL, C := 7
+
+step 4
+   C  7
+   K  [(CALL, #<x>)]
+   V  #<x>
+   >  leaf: a number is its own value, so V := C = 7
+
+step 5
+   C  (consult K)
+   K  [(CALL, #<x>)]
+   V  7
+   >  pop CALL: V is the arg 7; bind x:=7 in a new scope, C := body (x)
+
+step 6
+   C  x
+   K  []
+   V  7
+   >  leaf: a variable is looked up in E, so V := lookup(x) = 7
+
+step 7
+   C  (consult K)
+   K  []
+   V  7
+   >  K is empty, so V (7) is the final answer
 ```
 
 (`#<x>` is the closure the `lambda` produced: parameter `x`, body `x`.)  The two
@@ -432,28 +490,85 @@ evaluate the outer call we must first evaluate the inner call.
 Two closures appear along the way, so name them for the trace: `#<x>` is the value
 of `(lambda x (lambda y x))`, and `#<y>` is the value of the `(lambda y x)` it
 returns.  Three environments appear too: `top` is where we start, `e1` binds `x:3`,
-and `e2` binds `y:9`.  The `C` column shows the actual expression each pass is
-working on, and in the `K` column `ARG(9)` and `CALL(#<x>)` abbreviate the
+and `e2` binds `y:9`.  The `C` line of each step shows the actual expression that
+pass is working on, and in the `K` entries `ARG(9)` and `CALL(#<x>)` abbreviate the
 `(FRAME_ARG, 9, …)` and `(FRAME_CALL, #<x>)` tuples.
 
 ```
- step   C  (or action)                    K (bottom .. top)           V       what happens
- ----   ----------------------------      ----------------------      -----   ---------------------------------
-   1    (((lambda x (lambda y x)) 3) 9)   []                           –      call: push ARG(9), C := ((lambda x (lambda y x)) 3)
-   2    ((lambda x (lambda y x)) 3)       [ARG(9)]                     –      call: push ARG(3), C := (lambda x (lambda y x))
-   3    (lambda x (lambda y x))           [ARG(9), ARG(3)]             –      lambda leaf: V := #<x>
-   4    (consult K)                       [ARG(9), ARG(3)]             #<x>   pop ARG(3): push CALL(#<x>), C := 3
-   5    3                                 [ARG(9), CALL(#<x>)]         #<x>   leaf: V := 3
-   6    (consult K)                       [ARG(9), CALL(#<x>)]         3      pop CALL: bind x:3 in e1, C := (lambda y x)
-   7    (lambda y x)   [in e1]            [ARG(9)]                     3      lambda leaf: V := #<y>
-   8    (consult K)                       [ARG(9)]                     #<y>   pop ARG(9): push CALL(#<y>), C := 9
-   9    9                                 [CALL(#<y>)]                 #<y>   leaf: V := 9
-  10    (consult K)                       [CALL(#<y>)]                 9      pop CALL: bind y:9 in e2, C := x
-  11    x   [in e2]                       []                           9      leaf: look up x -> e2 has y, e1 has x=3; V := 3
-  12    (consult K)                       []                           3      K empty -> return 3
+step 1
+   C  (((lambda x (lambda y x)) 3) 9)
+   K  []
+   V  –
+   >  call: save arg 9 in FRAME_ARG, evaluate the function first
+
+step 2
+   C  ((lambda x (lambda y x)) 3)
+   K  [ARG(9)]
+   V  –
+   >  call: save arg 3 in FRAME_ARG, evaluate the function first
+
+step 3
+   C  (lambda x (lambda y x))
+   K  [ARG(9), ARG(3)]
+   V  –
+   >  lambda is a leaf: its value is the closure #<x>, so V := #<x>
+
+step 4
+   C  (consult K)
+   K  [ARG(9), ARG(3)]
+   V  #<x>
+   >  pop ARG(3): V is the function #<x>; save it in a CALL note, C := 3
+
+step 5
+   C  3
+   K  [ARG(9), CALL(#<x>)]
+   V  #<x>
+   >  leaf: a number is its own value, so V := C = 3
+
+step 6
+   C  (consult K)
+   K  [ARG(9), CALL(#<x>)]
+   V  3
+   >  pop CALL: V is the arg 3; bind x:=3 in e1, C := (lambda y x)
+
+step 7
+   C  (lambda y x)  [in e1]
+   K  [ARG(9)]
+   V  3
+   >  lambda is a leaf: its value is the closure #<y>, so V := #<y>
+
+step 8
+   C  (consult K)
+   K  [ARG(9)]
+   V  #<y>
+   >  pop ARG(9): V is the function #<y>; save it in a CALL note, C := 9
+
+step 9
+   C  9
+   K  [CALL(#<y>)]
+   V  #<y>
+   >  leaf: a number is its own value, so V := C = 9
+
+step 10
+   C  (consult K)
+   K  [CALL(#<y>)]
+   V  9
+   >  pop CALL: V is the arg 9; bind y:=9 in e2, C := x
+
+step 11
+   C  x  [in e2]
+   K  []
+   V  9
+   >  leaf: look up x in E; e2 binds y, e1 binds x=3, so V := 3
+
+step 12
+   C  (consult K)
+   K  []
+   V  3
+   >  K is empty, so V (3) is the final answer
 ```
 
-Follow the `K` column down and back up.  It starts empty, grows to **two** notes at
+Follow the `K` line down the steps and back up.  It starts empty, grows to **two** notes at
 step 3 as the machine descends through the nested calls, then drains one note at a
 time as each value arrives, back to empty at the end, and the answer, `3`, is the
 `x` that the innermost lookup reaches two scopes up the chain.  That rise and fall
@@ -469,8 +584,9 @@ overflowed Python's stack now lives somewhere that does not overflow.
 ## 4.8 Where the tail-call optimization lives now
 
 Chapter 3 got tail calls into constant space by reusing the loop's frame instead of
-recursing.  This machine keeps that property, and it is worth seeing *exactly* where
-it comes from, because it is a single line, or rather, a single *missing* line.
+recursing.  This machine keeps that property, and it is easy to miss exactly where
+that comes from, because it comes down to a single line, or rather a single
+*missing* line.
 
 Every frame on `K` is pushed for the same reason: the machine is about to descend
 into a sub-expression whose value it will need *and then do more with*.  `FRAME_IF`
@@ -486,12 +602,13 @@ runs at whatever `K` height the call happened at: it does not add a level.
 Now suppose that body ends in another call: a tail call.  That call will push its
 own `FRAME_ARG`/`FRAME_CALL` while it evaluates *its* function and argument, but
 those pop off again before its body runs, leaving `K` exactly as tall as it started.
-A function that tail-calls itself a million times rides that spot on `K` up and down
-a million times and never climbs.  That is constant space, and it falls out of the
-machine for free, not from any check for "is this a tail call?", but simply because
-installing a body pushes no frame.  A *non*-tail call, by contrast, is always sitting
-under a `FRAME_ARG` or `FRAME_CALL` that has not popped yet (that pending frame is
-the leftover work), so it does add a level, exactly as it should.
+A function that tail-calls itself a million times runs up and down that one spot on
+`K` a million times and never climbs.  That is constant space, and we get it for
+free.  Nothing in the machine checks "is this a tail call?"; the body simply
+installs with no frame pushed, and that is all it takes.  A *non*-tail call is
+different: it is always sitting under a `FRAME_ARG` or `FRAME_CALL` that has not
+popped yet, and that pending frame is its leftover work, so it does add a level,
+just as it should.
 
 Our shrunk language has no way to *count*, so we cannot write `countdown` here to
 watch it loop flat.  That demonstration waits for Chapter 5, where the full language
@@ -499,8 +616,8 @@ returns on this very machine.  But the property is already built in: the CEK mac
 gives tail calls constant space and gives non-tail calls a heap-allocated `K`, and
 between the two, nothing in it ever touches Python's stack.
 
-It is worth setting the three machines we have built side by side, because together
-they tell one story about *where a program's unfinished work is kept*:
+Set the three machines we have built side by side and they tell one story, about
+*where a program's unfinished work is kept*:
 
 | interpreter | tail calls | non-tail pending work lives on... | a deep recursion |
 |---|---|---|---|
@@ -545,21 +662,21 @@ a closure flowing through the machine as an ordinary value.  A closure that
 reaches the top and becomes the answer prints as `#<procedure (x)>`, naming its
 parameter, exactly as in Chapter 2.
 
-It is worth sitting with how little the machine is: three frame tags, one closure
-tag, two loops.  Everything a program does (choosing, calling, capturing,
-returning) is that handful of tuples moving on and off `K`.  And the reason we
-stripped the language to the studs was to make *this* visible with nothing else in
-the frame.  Chapter 5 puts `let`, `set!`, `begin`, and the primitives back, and
-every one of them is just more frame tags on the machine you now have whole.
+Sit for a moment with how little the machine is: three frame tags, one closure tag,
+two loops.  Everything a program does, every choice and call and captured function,
+is that handful of tuples moving on and off `K`.  We stripped the language down to
+the studs for exactly this reason, to make it visible with nothing else in the
+way.  Chapter 5 puts `let`, `set!`, `begin`, and the primitives back, and every one
+of them is just more frame tags on the machine you now have whole.
 
 
 ## 4.10 Extending the machine
 
 Chapter 5 grows this machine into the full language, and it does so entirely by
 *adding frame tags*, the recipe from §4.5: a new tag, a push-site in EVAL, a handler
-in APPLY.  Before we do that, it is worth naming what the machine guarantees and what
-each new form has to decide, because those few facts are the whole of what you need
-to extend it.  Chapter 5 is really just this list, applied.
+in APPLY.  Before we do that, let us pin down what the machine guarantees and what
+each new form has to decide.  Those few facts are the whole of what you need to
+extend it, and Chapter 5 is really just this list, applied.
 
 1. **The machine is always in one of two states, and never both.**  EVAL descends: it
    takes `C` apart, pushes a note for each piece that must be evaluated first, and

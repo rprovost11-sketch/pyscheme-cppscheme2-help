@@ -193,7 +193,7 @@ a number.
 **Then give strings something to do.** Add a few primitives, each a short Python
 function: `string-length`, `string-append`, `substring`, and a `string->symbol` /
 `symbol->string` pair that converts between the two types you have now cleanly
-separated. That last pair is the quiet reward for Project 3: the conversion is only
+separated. That last pair is the real reward for Project 3: the conversion is only
 *expressible* because the two are finally distinct.
 
 

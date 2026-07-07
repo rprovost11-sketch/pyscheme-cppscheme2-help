@@ -102,7 +102,7 @@ elif C[0] == 'if':
     continue
 ```
 
-And here is the payoff: the user-defined function call.  In Chapter 2 we opened a
+Now the payoff: the user-defined function call.  In Chapter 2 we opened a
 new scope on the function's captured environment and *recursed* into its body.
 Now we reassign the registers instead: point `E` at the new scope, point `C` at
 the body's final form, and loop.
@@ -135,24 +135,56 @@ runs all the way to `0` and returns.
 
 ### 3.2.1 Watching the loop
 
-It is worth seeing that happen.  Here is `(countdown 3)` traced pass by pass
-through the `while` loop, one Python frame, reused every time, with `C` and `E`
-overwritten and nothing pushed:
+Watch it happen.  Here is `(countdown 3)` traced pass by pass through the `while`
+loop.  It is all one Python frame, reused every time, with `C` and `E` overwritten
+and nothing pushed.  Each pass shows the two registers `C` and `E`, and on the line
+marked `>`, what the pass does and where the values it uses come from:
 
 ```
-one Python frame, reused every pass: the stack never grows
+pass 1
+   C  (countdown 3)
+   E  (top level)
+   >  call countdown: bind n:=3 in a new scope, C := its body
 
- pass   C  (expression evaluated this pass)         E (n)   the pass does
- ----   ----------------------------------------    -----   ----------------------------
-   1    (countdown 3)                               (top)   tail call: E := {n:3}, C := body
-   2    (if (= n 0) 0 (countdown (- n 1)))            3     test #f:   C := (countdown (- n 1))
-   3    (countdown (- n 1))                           3     tail call: E := {n:2}, C := body
-   4    (if (= n 0) 0 (countdown (- n 1)))            2     test #f:   C := (countdown (- n 1))
-   5    (countdown (- n 1))                           2     tail call: E := {n:1}, C := body
-   6    (if (= n 0) 0 (countdown (- n 1)))            1     test #f:   C := (countdown (- n 1))
-   7    (countdown (- n 1))                           1     tail call: E := {n:0}, C := body
-   8    (if (= n 0) 0 (countdown (- n 1)))            0     test #t:   C := 0
-   9    0                                             0     return 0
+pass 2
+   C  (if (= n 0) 0 (countdown (- n 1)))
+   E  n = 3
+   >  if: (= n 0) is #f, so C := else branch (countdown (- n 1))
+
+pass 3
+   C  (countdown (- n 1))
+   E  n = 3
+   >  tail call: (- n 1) = 2, bind n:=2 in a new scope, C := body
+
+pass 4
+   C  (if (= n 0) 0 (countdown (- n 1)))
+   E  n = 2
+   >  if: (= n 0) is #f, so C := else branch (countdown (- n 1))
+
+pass 5
+   C  (countdown (- n 1))
+   E  n = 2
+   >  tail call: (- n 1) = 1, bind n:=1 in a new scope, C := body
+
+pass 6
+   C  (if (= n 0) 0 (countdown (- n 1)))
+   E  n = 1
+   >  if: (= n 0) is #f, so C := else branch (countdown (- n 1))
+
+pass 7
+   C  (countdown (- n 1))
+   E  n = 1
+   >  tail call: (- n 1) = 0, bind n:=0 in a new scope, C := body
+
+pass 8
+   C  (if (= n 0) 0 (countdown (- n 1)))
+   E  n = 0
+   >  if: (= n 0) is #t, so C := then branch (0)
+
+pass 9
+   C  0
+   E  n = 0
+   >  leaf: a number is its own value; nothing pending, so return 0
 ```
 
 Every pass either points `E` at a fresh scope for the next `n` (a tail call) or
@@ -206,8 +238,8 @@ Schemes that quietly broke that guarantee.  Chapter 3 keeps it.
 
 ## 3.4 The continuation
 
-One honest limit remains, and it is worth looking at squarely, because removing it
-is the whole subject of the next chapter.
+One limit is still with us.  Removing it is the whole subject of the next chapter,
+so let us be clear about what it is.
 
 The tail calls loop now, but the *non-tail* recursions still ride Python's stack,
 and that stack is doing real work for us.  Think about what happens when the
@@ -233,7 +265,7 @@ Stack these up and you have the whole of "what the program still has to do."  Wh
 pending multiplies, one per paused frame) each waiting its turn as the values come
 back.
 
-Here is the subtle part: **you cannot point at any of them.**  The continuation is
+The subtle part is this: **you cannot point at any of them.**  The continuation is
 never a thing inside our interpreter: it is *implied* by where Python happens to be
 in its own recursion.  When `lEval` recurses to evaluate `(factorial 4)`, the
 "multiply by 5" step is simply the Python code sitting on the line after the
@@ -290,8 +322,7 @@ function does, a tail call, and it loops.  The computation is identical; only th
 *place* the pending work sits has changed, from *after* the call to *inside its
 arguments*.
 
-That is worth stating as a rule, because it is the whole technique and it carries
-everywhere:
+This is the whole technique, and it carries everywhere.  Stated as a rule:
 
 > The shape of the code does not decide whether it loops or stacks.  *Where the
 > pending work sits* does.  Move that work into an accumulator argument, and a
@@ -432,7 +463,7 @@ summing a real answer, the two predicates taking turns a hundred thousand times.
 The complete file is `examples/IttyBittyLisp3.py`, and `python IttyBittyLisp3.py`
 runs the countdown as its finale.
 
-Two honest limits are worth keeping in view.  First, from §3.5: not every recursion
+Keep two limits in view.  First, from §3.5: not every recursion
 turns tail-recursive so easily: a computation that genuinely must remember a stack
 of unfinished work (walking a deep tree, say) still stacks frames, and deep enough,
 still overflows.  Chapters 4 and 5 remove even that last reliance on Python's stack.

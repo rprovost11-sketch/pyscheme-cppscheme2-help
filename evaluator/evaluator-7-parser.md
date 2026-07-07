@@ -69,7 +69,9 @@ the cutting.  Splitting on whitespace gives exactly the tokens we want:
 
 ```
 tokenize("(if (= a 2) (+ a 1) (- a 1))")
-  -> ['(', 'if', '(', '=', 'a', '2', ')', '(', '+', 'a', '1', ')', '(', '-', 'a', '1', ')', ')']
+  -> ['(', 'if', '(', '=', 'a', '2', ')',
+      '(', '+', 'a', '1', ')',
+      '(', '-', 'a', '1', ')', ')']
 ```
 
 Every parenthesis is its own token, and every name and number stands alone.  That is
@@ -187,7 +189,9 @@ the series has been evaluating by hand all along:
 ```
 Tokenizer output:
   source:  (if (= a 2) (+ a 1) (- a 1))
-  tokens:  ['(', 'if', '(', '=', 'a', '2', ')', '(', '+', 'a', '1', ')', '(', '-', 'a', '1', ')', ')']
+  tokens:  ['(', 'if', '(', '=', 'a', '2', ')',
+            '(', '+', 'a', '1', ')',
+            '(', '-', 'a', '1', ')', ')']
 
 Parser output (this is the AST lEval operates on):
   source:  (if (= a 2) (+ a 1) (- a 1))
@@ -219,8 +223,8 @@ there was nothing in it but the two small stages you just read.
 
 ## 7.6 Why it was so small
 
-It is worth ending on why this chapter was the shortest in the series, because the
-answer is the whole reason Lisp is written the way it is.
+Let us end on why this chapter was the shortest in the series, because the answer is
+the whole reason Lisp is written the way it is.
 
 Cast your mind back to Chapter 1 §1.2.  There we wrote the arithmetic `1 + 2*3` and
 drew its tree, and the point was that recovering that tree from the text is *work*:

@@ -95,7 +95,7 @@ body in that scope.  The names exist only inside the `let`:
   (+ (* a a) (* b b)))               ; ...run in order; the last value wins   =>  25
 ```
 
-The body here has two expressions, and that is worth pausing on: a body (in a
+The body here has two expressions, and that is deliberate: a body (in a
 `let` or a `lambda`) may hold as many expressions as you like.  They run in
 order, exactly like a `begin` from Chapter 1, and the value of the *last* one is
 the result; any earlier ones run for their side effects (here, the `print`, which
@@ -145,7 +145,7 @@ The two new forms, one line each:
 
 Return to the puzzle from §2.1: `make-adder` builds and returns a function, and
 the returned function still knows `n = 5` even though `make-adder` has already
-finished.  Before we implement anything, it is worth seeing what is going on from
+finished.  Before we implement anything, let us see what is going on from
 the outside, because if you have written much Python, you have almost certainly
 done this already, just without a name for it.
 
@@ -175,7 +175,7 @@ variables it *captured* from where it was defined.  Here `n` is the captured
 variable, and the only way to reach it is to call `add5`: there is no other
 handle to it.
 
-One question is worth making explicit, because the whole idea turns on it: *which*
+One question needs making explicit, because the whole idea turns on it: *which*
 `n` does `add` use?  It uses the `n` of the `make_adder` call that created it
 (the scope `add` was **written inside**) and it would do so no matter where
 `add5` is later called from.  A function's free variables are resolved by where
@@ -236,7 +236,7 @@ And the count survives *between* calls: it is not reset each time `c1` runs,
 because the scope holding it was captured once, when `c1` was created, and lives
 as long as `c1` does.
 
-So a closure gives you three things, worth naming because the rest of the series
+So a closure gives you three things, and the rest of the series
 leans on all three:
 
 - **capture**: the function keeps the free variables it saw where it was defined
@@ -247,7 +247,7 @@ leans on all three:
   *fresh* set of variables, so `c1` and `c2` never collide.
 
 Everything in the rest of this chapter is the machinery that delivers exactly
-this.  And it all comes down to a single decision, worth holding in mind as we
+this.  And it all comes down to a single decision, the one to hold in mind as we
 build: **a function must remember the environment it was defined in.**  When we
 implement `lambda`, it will capture the current environment; when we call a
 function, we will run its body in a new scope chained off that *captured*
@@ -552,7 +552,7 @@ the §2.4 behaviour, unchanged.  The new version only *adds* reach: functions
 defined inside other scopes now remember those scopes too.  Closures are a strict
 generalization of the simple version, not a replacement for it.
 
-One design choice is worth pausing on before we read the whole thing.  `Function`,
+One design choice stands out before we read the whole thing.  `Function`,
 unlike `Environment`, has no underscores and no methods: it is just a record of the
 three things a closure is, its parameters, its body, and its captured environment,
 read directly as `fn.params`, `fn.body`, `fn.env`.  `Environment` earns its methods
@@ -713,7 +713,7 @@ The complete, runnable file is `examples/IttyBittyLisp2.py`:
 python examples/IttyBittyLisp2.py
 ```
 
-Two things are worth noticing about what we now have.  First, it is genuinely
+Two things stand out about what we now have.  First, it is genuinely
 expressive: first-class functions, recursion, and closures are the foundation of
 most of what larger languages are built from, and they cost us only the
 `Environment` chain plus three new `lEval` cases.  Second, it has a lurking limit.
@@ -753,7 +753,7 @@ chapter.  Try them at the REPL against `IttyBittyLisp2.py`.
   `set!` + `lambda` above.  Add `define` as a special form that rewrites
   `(define (name params...) body...)` into
   `(set! name (lambda (params...) body...))` and evaluates that.  Then a question
-  worth sitting with: could `define` be handled not by a new `elif` inside `lEval`,
+  to sit with: could `define` be handled not by a new `elif` inside `lEval`,
   but by a rule that rewrites the code *before* evaluation, a **macro**?  It can,
   and that is a major idea a later chapter builds; work out why you cannot do it
   yet.

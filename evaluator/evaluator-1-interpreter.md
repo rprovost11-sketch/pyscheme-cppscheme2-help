@@ -107,7 +107,8 @@ is built every time your code runs.
 This tree has a name: the **abstract syntax tree**, or **AST**.  *Syntax tree*
 because it is the program's syntax arranged as a tree; *abstract* because it
 throws away the incidental surface details (the spaces, the exact punctuation)
-and keeps only the meaningful structure.  Each branching point is a **node** (an operation together with its parts) and each tip is a **leaf**: an **atom**, a
+and keeps only the meaningful structure.  Each branching point is a **node** (an
+operation together with its parts) and each tip is a **leaf**: an **atom**, a
 single indivisible piece like the number `1` or the name `x`, with nothing
 further inside.
 
@@ -224,7 +225,7 @@ fact anything that is not a list) returns itself; a name is looked up in `env`
 and its stored value is returned.  Nothing recursive yet: these are the leaves
 of the AST, where the walk bottoms out.
 
-One thing worth noticing before we go on: the *order* of these branches is
+One thing to notice before we go on: the *order* of these branches is
 load-bearing, not just tidy.  The boolean test has to come before the name test:
 `'#t'` and `'#f'` are themselves strings, so putting the `isinstance(expr, str)`
 name test first would swallow them.  And all three atom cases have to come before
@@ -362,7 +363,7 @@ def lisp_print( args ):
 global_env['print'] = lisp_print
 ```
 
-Two things are worth noticing.  First, `lisp_print` *returns* its argument.  In
+Two things stand out.  First, `lisp_print` *returns* its argument.  In
 many languages printing is a statement that yields nothing; here every function call has a
 return value, so `(+ (print 10) 5)` prints `10` and then computes `15`: the
 `print` hands its `10` straight back to the `+`.  Second, that function plus one
@@ -371,8 +372,8 @@ operations: no change to `lEval`, just one more name in the environment.
 
 ### 1.4.2 Primitive or special form?
 
-You now have the two ways to add something to the interpreter, and it is worth
-being clear about when to reach for each.  It is the distinction §1.3 drew
+You now have the two ways to add something to the interpreter, and it helps to be
+clear about when to reach for each.  It is the distinction §1.3 drew
 (special form versus function call) turned into a practical rule.
 
 - If your new operation just computes a result from arguments that are **always
@@ -578,7 +579,7 @@ from §1.6.  Try them against `IttyBittyLisp1.py`.
   "first" and "rest"; the names are a historical accident, but the operations are
   simple.)  These are also what finally make `quote` pay off: with them you can
   build lists and take them apart, and so write real list-processing programs
-  without touching `lEval` at all.  That is worth sitting with: a whole class of
+  without touching `lEval` at all.  That is the thing to sit with: a whole class of
   programs added purely as *library* (primitives), with the *language* (the
   evaluator) left unchanged.  By §1.4.2 every one of these is a primitive: each
   only computes from already-evaluated arguments.

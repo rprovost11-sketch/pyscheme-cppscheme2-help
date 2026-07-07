@@ -210,7 +210,7 @@ elif ftag == FRAME_ARG:              # (FRAME_ARG, done, todo, env); V just arri
     break
 ```
 
-Three things are worth pausing on.
+Pause on three things here.
 
 First, the frame **re-pushes a shrinking copy of itself**, the same trick `FRAME_SEQ`
 used, so one frame kind walks the whole operator-and-operands list, no matter how
@@ -227,20 +227,58 @@ pointing `C` at the first.  And note what it does *not* do: pushing a frame for 
 *call itself*.  As in Chapter 4, installing a body pushes nothing, so a tail call
 reuses the current `K` depth.  Tail-call optimization survives the redesign untouched.
 
-Third, `done[0]` is the function because the operator was evaluated first.  A tiny
-trace of `(+ 3 2)` shows the accumulation:
+Third, `done[0]` is the function because the operator was evaluated first.  A short
+trace of `(+ 3 2)` shows the accumulation, in the same step-by-step format as
+Chapter 4:
 
 ```
- step   C  (or action)   K (bottom .. top)              V        what happens
- ----   --------------   ---------------------------    ------   ------------------------------
-   1    (+ 3 2)          []                              –       call: push ARG([],[3,2]), C := +
-   2    +                [ARG([],[3,2])]                 –       look up + -> the primitive
-   3    (consult K)      [ARG([],[3,2])]                 #<+>    pop: done=[#<+>], push ARG([#<+>],[2]), C := 3
-   4    3                [ARG([#<+>],[2])]               #<+>    leaf: V := 3
-   5    (consult K)      [ARG([#<+>],[2])]               3       pop: done=[#<+>,3], push ARG([#<+>,3],[]), C := 2
-   6    2                [ARG([#<+>,3],[])]              3       leaf: V := 2
-   7    (consult K)      [ARG([#<+>,3],[])]              2       pop: done=[#<+>,3,2], todo empty -> call + on (3,2)
-   8    (consult K)      []                              5       V := 5; K empty -> return 5
+step 1
+   C  (+ 3 2)
+   K  []
+   V  –
+   >  call: push ARG(done [], todo [3,2]); evaluate operator, C := +
+
+step 2
+   C  +
+   K  [ARG([],[3,2])]
+   V  –
+   >  leaf: look up + in E, so V := #<+> (the primitive)
+
+step 3
+   C  (consult K)
+   K  [ARG([],[3,2])]
+   V  #<+>
+   >  pop ARG: append V to done=[#<+>]; todo left, C := 3
+
+step 4
+   C  3
+   K  [ARG([#<+>],[2])]
+   V  #<+>
+   >  leaf: a number is its own value, so V := C = 3
+
+step 5
+   C  (consult K)
+   K  [ARG([#<+>],[2])]
+   V  3
+   >  pop ARG: append V to done=[#<+>,3]; todo left, C := 2
+
+step 6
+   C  2
+   K  [ARG([#<+>,3],[])]
+   V  3
+   >  leaf: a number is its own value, so V := C = 2
+
+step 7
+   C  (consult K)
+   K  [ARG([#<+>,3],[])]
+   V  2
+   >  pop ARG: done=[#<+>,3,2], todo empty; call + on (3,2)
+
+step 8
+   C  (consult K)
+   K  []
+   V  5
+   >  + returned 5, so V := 5; K empty, so return 5
 ```
 
 (`#<+>` is the `+` primitive.)  The operator lands in `done` first, each operand
@@ -248,8 +286,8 @@ follows, and when `todo` runs dry the primitive fires.  One frame kind, accumula
 and it subsumes Chapter 4's `FRAME_ARG` *and* `FRAME_CALL` in a single note.
 
 That trace stayed one frame deep, because every operand was a leaf.  Nest one call
-inside another and `K` finally grows.  Take `(+ (* 2 3) 1)`, and the moment worth
-catching comes as the machine turns to evaluate the operand `(* 2 3)`: the outer `+`
+inside another and `K` finally grows.  Take `(+ (* 2 3) 1)`, and the moment to
+watch comes as the machine turns to evaluate the operand `(* 2 3)`: the outer `+`
 is only partway done (it has its operator, and still has `1` left to do), so its frame
 is sitting on `K` when the inner call pushes its own on top:
 
@@ -459,8 +497,8 @@ and renders a closure with its full parameter list, `#<procedure (x y)>`.
 ==> (a b c)
 ```
 
-Everything Chapter 3 could do, now running on the CEK machine.  Two lines are worth a
-glance.  `(if 0 100 200)` returns `100`: `0` is *true*, the restored Scheme rule.
+Everything Chapter 3 could do, now running on the CEK machine.  Two lines stand out.
+`(if 0 100 200)` returns `100`: `0` is *true*, the restored Scheme rule.
 And in `(+ (print 10) 5)` the bare `10` appears *above* the `>>>` line: `print` is a
 side effect that fires while the expression is being evaluated, before `run` echoes
 the form, and it *returns* its argument, so the `10` flows on into the `+` and the
