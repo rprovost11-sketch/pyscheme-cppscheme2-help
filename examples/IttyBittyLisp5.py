@@ -40,7 +40,6 @@ FRAME_SET = 1   # waiting on a value to assign
 FRAME_SEQ = 2   # a begin / body with forms still to run
 FRAME_ARG = 3   # an application accumulating operator + operands
 
-
 # ---------------------------------------------------------------------------
 # Environment: a linked chain of scopes (same class as IttyBittyLisp2/3/4)
 # ---------------------------------------------------------------------------
@@ -71,7 +70,6 @@ class Environment:
         # handle goes straight there, with no second walk down the chain.
         self._global._bindings[name] = value
         return value
-
 
 # ---------------------------------------------------------------------------
 # The CEK machine
@@ -203,7 +201,6 @@ globalBindings = {
     'print': lisp_print,
 }
 global_env = Environment( bindings=globalBindings )
-
 
 # ---------------------------------------------------------------------------
 # Helpers and demo

@@ -55,7 +55,6 @@ FRAME_IF   = 0   # waiting on a test value
 FRAME_ARG  = 1   # waiting on a function value
 FRAME_CALL = 2   # waiting on an argument value
 
-
 # ---------------------------------------------------------------------------
 # Environment: a linked chain of scopes (same class as IttyBittyLisp2/3)
 # ---------------------------------------------------------------------------
@@ -148,7 +147,6 @@ def lEval( expr, env=None ):
                 break
 
         # fall through to the outer loop -- re-enter EVAL with the new C/E
-
 
 # ---------------------------------------------------------------------------
 # Helpers and demo
